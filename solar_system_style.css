@@ -860,6 +860,102 @@ h4 { margin: 10px 0 5px 0; }
     max-height: 80vh;
     z-index: 20;
     border: 1px solid white;
+    overflow: visible; /* Allow advanced shader panel to slide out */
+}
+
+/* Row with ON/OFF + slide-out arrow for Advanced Shaders */
+.settings-group-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 5px;
+    flex-wrap: wrap;
+}
+
+.shader-panel-arrow {
+    padding: 8px 12px;
+    background: #000000;
+    color: #FFFFFF;
+    border: 1px solid #FFFFFF;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: 'Roboto', sans-serif;
+    font-size: 0.95rem;
+    line-height: 1;
+    transition: background 0.15s ease, transform 0.2s ease;
+}
+
+.shader-panel-arrow:hover {
+    background: #1A1A1A;
+}
+
+.shader-panel-arrow.open {
+    background: #555;
+    font-weight: bold;
+}
+
+/* Slide-out advanced shader options panel (right of settings popup) */
+.advanced-shader-panel {
+    position: absolute;
+    left: calc(100% + 10px);
+    top: 0;
+    width: 300px;
+    max-height: 80vh;
+    overflow-y: auto;
+    color: white;
+    background: rgba(0, 0, 0, 0.92);
+    padding: 16px 18px;
+    border-radius: 5px;
+    border: 1px solid white;
+    z-index: 21;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(-12px);
+    transition: opacity 0.22s ease, transform 0.22s ease;
+    box-sizing: border-box;
+}
+
+.advanced-shader-panel.open {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+}
+
+.advanced-shader-panel h4 {
+    margin: 0 0 12px 0;
+    font-family: 'Roboto', sans-serif;
+    font-weight: 500;
+    font-size: 1.05rem;
+}
+
+.advanced-shader-panel .shader-option-row {
+    margin-bottom: 12px;
+}
+
+.advanced-shader-panel .shader-option-row:last-child {
+    margin-bottom: 0;
+}
+
+.advanced-shader-panel label {
+    font-family: 'Roboto', sans-serif;
+    font-size: 0.9rem;
+    color: #FFFFFF;
+    display: block;
+    margin-bottom: 4px;
+}
+
+/* Stack panel below on narrow viewports */
+@media (max-width: 1100px) {
+    .advanced-shader-panel {
+        left: 0;
+        top: calc(100% + 10px);
+        width: 100%;
+        max-height: 40vh;
+        transform: translateY(-8px);
+    }
+    .advanced-shader-panel.open {
+        transform: translateY(0);
+    }
 }
 
 /* Add spacing between settings groups and style labels */

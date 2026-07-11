@@ -7,14 +7,15 @@ A browser-based planetarium built with [Three.js](https://threejs.org/). Explore
 **Author:** Jon Kakaley ([@JonKakaley](https://x.com/JonKakaley))  
 **Repository:** [github.com/jonK1984/planetarium.earth](https://github.com/jonK1984/planetarium.earth)
 
-**CURRENLTY HOSTED:** [http://planetarium.earth/](http://planetarium.earth/)
+**CURRENTLY HOSTED:** [http://planetarium.earth/](http://planetarium.earth/)
+
 ---
 
 ## Overview
 
 planetarium.Earth visualizes solar system dynamics using a **two-body Keplerian** model in real time. It is intended as an educational tool for enthusiasts, students, and researchers: click bodies for descriptions and physical data, scrub time to watch orbits unfold, and switch between orbital camera and first-person flight modes.
 
-Settings (texture quality, antialiasing, trails, etc.) are saved in browser cookies so your preferred render profile persists across sessions.
+Settings (texture quality, antialiasing, advanced shaders, trails, etc.) are saved in browser cookies so your preferred render profile persists across sessions.
 
 ---
 
@@ -24,17 +25,42 @@ Settings (texture quality, antialiasing, trails, etc.) are saved in browser cook
 - **Cameras:** Orbital controls (rotate / pan / zoom) and flight mode with throttle, pitch/yaw/roll, and crosshair focus
 - **Time:** Pause/resume and a time-scale slider to speed up or reverse simulation time
 - **Tracking:** Focus/search bodies; optional planet, moon, and asteroid orbits and trails
-- **Visuals:** Rings, atmospheres, normal maps, asteroid belt sprites, star/milky-way backdrops; multiple texture quality tiers
+- **Visuals:** Rings, cloud/atmosphere shells, normal maps, asteroid belt sprites, star/milky-way backdrops; multiple texture quality tiers
+- **Advanced shaders (opt-in):** Master toggle plus a slide-out panel of discrete per-effect controls (see below)
 - **Science UI:** Physical constants table, orbital elements, equations (MathJax), narrative descriptions, and photo galleries
-- **Render settings:** Antialiasing, logarithmic depth buffer, complex meshes, ambient light, control size — persisted via cookies
+- **Render settings:** Pixel ratio, anisotropic filtering, antialiasing, texture size, advanced shaders, complex meshes, logarithmic depth buffer — persisted via cookies
 - **Getting Started:** In-app walkthrough with example images and short videos
+
+---
+
+## Advanced shaders
+
+**Video → Render Settings → Enable Advanced Shaders.** Use **ON/OFF** for the master switch, then click **▶** to open **Advanced Shader Options**.
+
+Each option is independent. An effect runs only when the **master is ON** and that option is **ON**. Defaults for sub-options are ON so the first time you enable the master, the full package is available; turn individual items off for performance or taste. Apply reloads the page (same as other render settings).
+
+| Option | What it does |
+|--------|----------------|
+| Sun Surface Turbulence | Animated FBM noise on the Sun surface |
+| Sun Corona & Fresnel | Stronger outer glow plus rim fresnel on the Sun |
+| Earth Night Lights | Day/night blend with city lights (`earth_night_lights.png`) on the dark side |
+| Soft Terminator Lighting | Soft wrap lighting on textured bodies (replaces hard day/night cut) |
+| Ring Lighting & Shadows | Sun-lit rings with planet umbra on the ring plane |
+| Bloom & Tone Mapping | Mild bloom on bright areas + ACES filmic tone mapping |
+| Cloud Motion | Reserved cloud-motion control (cloud layers still use the standard Phong shells) |
+| Earth Aurora | Additive polar aurora curtains on Earth’s night side |
+| Io Volcanic Glow | Warm emissive tint on Io |
+
+Atmospheres/cloud layers use the standard transparent Phong shells (advanced atmospheric scattering was removed after it distorted the scene).
+
+**Performance tip:** Leave Advanced Shaders **OFF** on low-end devices. Bloom and high texture tiers are the heaviest options when the master is ON.
 
 ---
 
 ## Requirements
 
 - A modern browser with **WebGL** (Microsoft Edge recommended; Chrome, Firefox, and Safari also tested)
-- Faster CPU/GPU recommended for high texture tiers and complex meshes
+- Faster CPU/GPU recommended for high texture tiers, complex meshes, and advanced shaders
 - No build toolchain — static HTML, CSS, and JavaScript only
 
 ---
@@ -63,16 +89,16 @@ Any static file server works (VS Code Live Server, `npx serve`, nginx, etc.).
 ```
 .
 ├── solar_system.html          # Entry page and UI shell
-├── solar_system.js            # Main simulation, rendering, interaction
-├── solar_system_style.css     # UI styles
-├── solar_constants.js         # Orbital elements, masses, body catalog
+├── solar_system.js            # Main simulation, rendering, interaction, settings
+├── solar_system_style.css     # UI styles (including advanced-shader panel)
+├── solar_constants.js         # Orbital elements, masses, body catalog, texture keys
 ├── solar_descriptions.js      # Narrative descriptions
 ├── solar_science_info.js      # Science / physical property data
 ├── solar_image_list.js        # Photo gallery file lists
-├── shaders.js                 # Custom GLSL (sun, trails)
+├── shaders.js                 # Custom GLSL (sun, trails, Earth, soft planet, rings, aurora, bloom)
 ├── js/                        # Three.js, loaders, camera controls, MathJax
 ├── mesh/                      # Asteroid / small-body 3D models (GLB, OBJ)
-├── textures_lo|md|hi|mx/      # Surface maps by quality tier
+├── textures_lo|md|hi|mx/      # Surface maps by quality tier (+ earth_night_lights.png)
 ├── images/                    # UI photographs for body info panels
 ├── getting_started/           # Onboarding media
 ├── VERSION_TRACKING.txt       # Session-based change log
@@ -95,6 +121,7 @@ Full tables live under the in-app **Help** menu (Simulation / Orbital / Flight c
 | Search body | Search bar (“Search Planet…”) |
 | Focus body under crosshair (flight) | `T` |
 | Cycle previous / next body | `,` / `.` |
+| Render / advanced shaders | Video → Render Settings |
 
 ---
 
@@ -113,7 +140,8 @@ Full tables live under the in-app **Help** menu (Simulation / Orbital / Flight c
 
 Code and documentation changes are recorded in plain language in:
 
-- **VERSION_TRACKING.txt** — session IDs (`S-#####`) and numbered change lines
+- **VERSION_TRACKING.txt** — session IDs (`S-#####`) and numbered change lines  
+  - Recent: **S-00002** advanced shader package; **S-00003** removed atmospheric scattering; **S-00004** README / tracking docs
 - **FILE_MANIFEST.txt** — which files exist and what they do
 
 Git history shows diffs; these files record intent for future maintainers.

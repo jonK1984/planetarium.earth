@@ -92,6 +92,7 @@ const bodies = [
       atmosphere_texture: 'atmosphere_earth_texture.jpg',
       normalMap: 'normal_map_earth.png',
       specularMap: 'specular_map_earth.png',
+      nightMap: 'earth_night_lights.png',
       moonScale: 1,
       moonOrbitScale: 1,
       rotationalAngularMomentum: 7.07e33,  // kg m²/s

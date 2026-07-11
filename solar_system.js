@@ -166,6 +166,30 @@ async function initializeSimulation() {
 let updateConstants = true;
 
 //Load Settings
+const SHADER_OPTION_KEYS = [
+    'shaderSunTurbulence',
+    'shaderSunCorona',
+    'shaderEarthNight',
+    'shaderSoftLighting',
+    'shaderRingLighting',
+    'shaderBloom',
+    'shaderCloudMotion',
+    'shaderAurora',
+    'shaderIoGlow'
+];
+
+const SHADER_OPTION_LABELS = {
+    shaderSunTurbulence: 'Sun Surface Turbulence',
+    shaderSunCorona: 'Sun Corona & Fresnel',
+    shaderEarthNight: 'Earth Night Lights',
+    shaderSoftLighting: 'Soft Terminator Lighting',
+    shaderRingLighting: 'Ring Lighting & Shadows',
+    shaderBloom: 'Bloom & Tone Mapping',
+    shaderCloudMotion: 'Cloud Motion',
+    shaderAurora: 'Earth Aurora',
+    shaderIoGlow: 'Io Volcanic Glow'
+};
+
 const defaultSettings = {
     pixelRatio: 0.5,
     anisotropicFiltering: 'ON',
@@ -174,7 +198,17 @@ const defaultSettings = {
     fpsVisible: true,
     areShadersEnabled: 'OFF',
     useComplexMeshes: 'OFF',  // New setting, default OFF
-    useLogDepthBuffer: 'ON'
+    useLogDepthBuffer: 'ON',
+    // Discrete advanced-shader sub-options (defaults ON for first master-ON experience)
+    shaderSunTurbulence: 'ON',
+    shaderSunCorona: 'ON',
+    shaderEarthNight: 'ON',
+    shaderSoftLighting: 'ON',
+    shaderRingLighting: 'ON',
+    shaderBloom: 'ON',
+    shaderCloudMotion: 'ON',
+    shaderAurora: 'ON',
+    shaderIoGlow: 'ON'
 };
 
 
@@ -220,10 +254,22 @@ const settings = {
     textureSize: getCookie('textureSize') || defaultSettings.textureSize,
     areShadersEnabled: getCookie('areShadersEnabled') || defaultSettings.areShadersEnabled,
     useComplexMeshes: getCookie('useComplexMeshes') || defaultSettings.useComplexMeshes,  // Add new setting
-    useLogDepthBuffer: getCookie('useLogDepthBuffer') || defaultSettings.useLogDepthBuffer  // Add new setting
+    useLogDepthBuffer: getCookie('useLogDepthBuffer') || defaultSettings.useLogDepthBuffer,  // Add new setting
+    shaderSunTurbulence: getCookie('shaderSunTurbulence') || defaultSettings.shaderSunTurbulence,
+    shaderSunCorona: getCookie('shaderSunCorona') || defaultSettings.shaderSunCorona,
+    shaderEarthNight: getCookie('shaderEarthNight') || defaultSettings.shaderEarthNight,
+    shaderSoftLighting: getCookie('shaderSoftLighting') || defaultSettings.shaderSoftLighting,
+    shaderRingLighting: getCookie('shaderRingLighting') || defaultSettings.shaderRingLighting,
+    shaderBloom: getCookie('shaderBloom') || defaultSettings.shaderBloom,
+    shaderCloudMotion: getCookie('shaderCloudMotion') || defaultSettings.shaderCloudMotion,
+    shaderAurora: getCookie('shaderAurora') || defaultSettings.shaderAurora,
+    shaderIoGlow: getCookie('shaderIoGlow') || defaultSettings.shaderIoGlow
 };
 
-
+/** True when master Advanced Shaders is ON and the named sub-option is ON. */
+function isShaderOn(key) {
+    return settings.areShadersEnabled === 'ON' && settings[key] === 'ON';
+}
 
 
 // Set TEXTURE_PATH based on textureSize
@@ -276,6 +322,122 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio * settings.pixelRatio);
 const gl = renderer.getContext();
+
+// Tone mapping when bloom package is enabled
+if (isShaderOn('shaderBloom')) {
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    if (THREE.sRGBEncoding !== undefined) {
+        renderer.outputEncoding = THREE.sRGBEncoding;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lightweight bloom (render target + bright extract + separable blur + combine)
+// ---------------------------------------------------------------------------
+let bloomPipeline = null;
+function createBloomPipeline() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const pr = renderer.getPixelRatio();
+    const rtOpts = { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat };
+    const sceneRT = new THREE.WebGLRenderTarget(w * pr, h * pr, rtOpts);
+    const brightRT = new THREE.WebGLRenderTarget(w * pr * 0.5, h * pr * 0.5, rtOpts);
+    const blurRT = new THREE.WebGLRenderTarget(w * pr * 0.5, h * pr * 0.5, rtOpts);
+
+    const quadGeo = new THREE.PlaneGeometry(2, 2);
+    const brightMat = new THREE.ShaderMaterial({
+        uniforms: {
+            tDiffuse: { value: null },
+            threshold: { value: 0.72 }
+        },
+        vertexShader: ss_shaders.bloomCompositeVertex,
+        fragmentShader: ss_shaders.bloomBrightFragment,
+        depthTest: false,
+        depthWrite: false
+    });
+    const blurMat = new THREE.ShaderMaterial({
+        uniforms: {
+            tDiffuse: { value: null },
+            direction: { value: new THREE.Vector2(1, 0) },
+            resolution: { value: new THREE.Vector2(w * pr * 0.5, h * pr * 0.5) }
+        },
+        vertexShader: ss_shaders.bloomCompositeVertex,
+        fragmentShader: ss_shaders.bloomBlurFragment,
+        depthTest: false,
+        depthWrite: false
+    });
+    const combineMat = new THREE.ShaderMaterial({
+        uniforms: {
+            tDiffuse: { value: null },
+            tBloom: { value: null },
+            strength: { value: 0.55 }
+        },
+        vertexShader: ss_shaders.bloomCompositeVertex,
+        fragmentShader: ss_shaders.bloomCombineFragment,
+        depthTest: false,
+        depthWrite: false
+    });
+
+    const brightScene = new THREE.Scene();
+    const blurScene = new THREE.Scene();
+    const combineScene = new THREE.Scene();
+    const brightQuad = new THREE.Mesh(quadGeo, brightMat);
+    const blurQuad = new THREE.Mesh(quadGeo, blurMat);
+    const combineQuad = new THREE.Mesh(quadGeo, combineMat);
+    brightScene.add(brightQuad);
+    blurScene.add(blurQuad);
+    combineScene.add(combineQuad);
+    const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    return {
+        sceneRT, brightRT, blurRT,
+        brightMat, blurMat, combineMat,
+        brightScene, blurScene, combineScene, orthoCam,
+        resize(nw, nh, npr) {
+            this.sceneRT.setSize(nw * npr, nh * npr);
+            this.brightRT.setSize(nw * npr * 0.5, nh * npr * 0.5);
+            this.blurRT.setSize(nw * npr * 0.5, nh * npr * 0.5);
+            this.blurMat.uniforms.resolution.value.set(nw * npr * 0.5, nh * npr * 0.5);
+        },
+        render(mainScene, mainCamera) {
+            // 1) Scene → sceneRT
+            renderer.setRenderTarget(this.sceneRT);
+            renderer.clear();
+            renderer.render(mainScene, mainCamera);
+
+            // 2) Bright extract
+            this.brightMat.uniforms.tDiffuse.value = this.sceneRT.texture;
+            renderer.setRenderTarget(this.brightRT);
+            renderer.clear();
+            renderer.render(this.brightScene, this.orthoCam);
+
+            // 3) Blur H
+            this.blurMat.uniforms.tDiffuse.value = this.brightRT.texture;
+            this.blurMat.uniforms.direction.value.set(1, 0);
+            renderer.setRenderTarget(this.blurRT);
+            renderer.clear();
+            renderer.render(this.blurScene, this.orthoCam);
+
+            // 4) Blur V (back into brightRT)
+            this.blurMat.uniforms.tDiffuse.value = this.blurRT.texture;
+            this.blurMat.uniforms.direction.value.set(0, 1);
+            renderer.setRenderTarget(this.brightRT);
+            renderer.clear();
+            renderer.render(this.blurScene, this.orthoCam);
+
+            // 5) Combine to screen
+            this.combineMat.uniforms.tDiffuse.value = this.sceneRT.texture;
+            this.combineMat.uniforms.tBloom.value = this.brightRT.texture;
+            renderer.setRenderTarget(null);
+            renderer.render(this.combineScene, this.orthoCam);
+        }
+    };
+}
+
+if (isShaderOn('shaderBloom')) {
+    bloomPipeline = createBloomPipeline();
+}
 
 const isLogDepthBuffer = settings.useLogDepthBuffer === 'ON';
 
@@ -597,6 +759,7 @@ function countTotalTextures() {
         if (body.atmosphere_texture) totalTextures++;
         if (body.ring_texture) totalTextures++;
         if (body.bump_texture) totalTextures++;
+        if (body.nightMap) totalTextures++;
         body.moons.forEach(moon => {
             if (moon.texture) totalTextures++;
             if (moon.normalMap) totalTextures++;
@@ -604,6 +767,7 @@ function countTotalTextures() {
             if (moon.atmosphere_texture) totalTextures++;
             if (moon.ring_texture) totalTextures++;
             if (moon.bump_texture) totalTextures++;
+            if (moon.nightMap) totalTextures++;
         });
     });
 }
@@ -902,6 +1066,7 @@ function getTexturesForPlanet(oPlanet) {
     let cloudTexture = null;
     let ringTexture = null;
     let bumpTexture = null;
+    let nightMap = null;
 
     if (TEXTURE_PATH === "") {
         // Skip loading textures if "None" is selected
@@ -911,8 +1076,9 @@ function getTexturesForPlanet(oPlanet) {
         if (oPlanet.atmosphere_texture) updateProgress(`${oPlanet.name} atmosphere texture skipped (Texture Size: None)`);
         if (oPlanet.ring_texture) updateProgress(`${oPlanet.name} ring texture skipped (Texture Size: None)`);
         if (oPlanet.bump_texture) updateProgress(`${oPlanet.name} bump texture skipped (Texture Size: None)`);
+        if (oPlanet.nightMap) updateProgress(`${oPlanet.name} night map texture skipped (Texture Size: None)`);
 
-        return { surfaceTexture, normalMap, specularMap, cloudTexture, ringTexture, bumpTexture };
+        return { surfaceTexture, normalMap, specularMap, cloudTexture, ringTexture, bumpTexture, nightMap };
     }
 
     function applyAnisotropic(texture, name, isDDS=false) {
@@ -1081,17 +1247,89 @@ function getTexturesForPlanet(oPlanet) {
             }
         );
     }
+    if (oPlanet.nightMap) {
+        const isDDS = oPlanet.nightMap.toLowerCase().endsWith('.dds');
+        textureLoader = isDDS ? textureLoaderDDS : imageTextureLoader;
+        nightMap = textureLoader.load(
+            TEXTURE_PATH + oPlanet.nightMap,
+            (tex) => {
+                applyAnisotropic(tex, `${oPlanet.name} night`, isDDS);
+                updateProgress(`${oPlanet.name} night map loaded`);
+            },
+            undefined,
+            (error) => {
+                console.error(`${oPlanet.name} night map load error:`, error);
+                updateProgress(`${oPlanet.name} night map load error`);
+            }
+        );
+    }
 
-    return { surfaceTexture, normalMap, specularMap, cloudTexture, ringTexture, bumpTexture };
+    return { surfaceTexture, normalMap, specularMap, cloudTexture, ringTexture, bumpTexture, nightMap };
 }
 
-function createMaterialFromTextures( oPlanet, surfaceTexture, normalMap, specularMap, cloudTexture )
+function createEarthMaterial(surfaceTexture, normalMap, specularMap, nightMap) {
+    const dummy = new THREE.Texture();
+    const soft = isShaderOn('shaderSoftLighting') ? 0.35 : 0.05;
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            dayMap: { value: surfaceTexture },
+            nightMap: { value: nightMap || dummy },
+            normalMap: { value: normalMap || dummy },
+            specularMap: { value: specularMap || dummy },
+            sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+            ambientColor: { value: new THREE.Color(ambientIntensity, ambientIntensity, ambientIntensity) },
+            softTerminator: { value: soft },
+            nightLightsEnabled: { value: isShaderOn('shaderEarthNight') ? 1.0 : 0.0 },
+            hasNightMap: { value: nightMap ? 1.0 : 0.0 },
+            hasNormalMap: { value: normalMap ? 1.0 : 0.0 },
+            hasSpecularMap: { value: specularMap ? 1.0 : 0.0 },
+            shininess: { value: 48.0 }
+        },
+        vertexShader: ss_shaders.advancedPlanetVertex,
+        fragmentShader: ss_shaders.earthSurfaceFragment
+    });
+}
+
+function createSoftPlanetMaterial(oPlanet, surfaceTexture, normalMap, specularMap) {
+    const dummy = new THREE.Texture();
+    const isIo = oPlanet.name === 'Io';
+    const ioGlow = isIo && isShaderOn('shaderIoGlow');
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            map: { value: surfaceTexture },
+            normalMap: { value: normalMap || dummy },
+            specularMap: { value: specularMap || dummy },
+            sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+            ambientColor: { value: new THREE.Color(ambientIntensity, ambientIntensity, ambientIntensity) },
+            softTerminator: { value: isShaderOn('shaderSoftLighting') ? 0.4 : 0.05 },
+            hasNormalMap: { value: normalMap ? 1.0 : 0.0 },
+            hasSpecularMap: { value: specularMap ? 1.0 : 0.0 },
+            shininess: { value: 20.0 },
+            emissiveColor: { value: new THREE.Color(ioGlow ? 0xff6622 : 0x000000) },
+            emissiveIntensity: { value: ioGlow ? 0.22 : 0.0 }
+        },
+        vertexShader: ss_shaders.advancedPlanetVertex,
+        fragmentShader: ss_shaders.softPlanetFragment
+    });
+}
+
+function createMaterialFromTextures( oPlanet, surfaceTexture, normalMap, specularMap, cloudTexture, nightMap )
 {
     let material = null;
     const normalScale = 1;
 
-    
-    
+    // Advanced Earth path (day/night + soft lighting)
+    if (oPlanet.name === 'Earth' && surfaceTexture && settings.areShadersEnabled === 'ON' &&
+        (isShaderOn('shaderEarthNight') || isShaderOn('shaderSoftLighting'))) {
+        return createEarthMaterial(surfaceTexture, normalMap, specularMap, nightMap);
+    }
+
+    // Soft terminator / Io glow for textured bodies
+    if (surfaceTexture && settings.areShadersEnabled === 'ON' &&
+        (isShaderOn('shaderSoftLighting') || (oPlanet.name === 'Io' && isShaderOn('shaderIoGlow')))) {
+        return createSoftPlanetMaterial(oPlanet, surfaceTexture, normalMap, specularMap);
+    }
+
     if( surfaceTexture )
     {
         surfaceTexture.wrapS = THREE.RepeatWrapping;
@@ -1116,13 +1354,62 @@ function createMaterialFromTextures( oPlanet, surfaceTexture, normalMap, specula
                 normalScale: new THREE.Vector2(normalScale, normalScale), // Strength of normal effect (adjustable)
                 });
         }
-        
+
+        // Io volcanic glow without full soft-planet shader path
+        if (oPlanet.name === 'Io' && isShaderOn('shaderIoGlow') && material.emissive) {
+            material.emissive = new THREE.Color(0xff5522);
+            material.emissiveIntensity = 0.25;
+        }
     }
     else
     {
         material = new THREE.MeshPhongMaterial({ color: oPlanet.color });
+        if (oPlanet.name === 'Io' && isShaderOn('shaderIoGlow')) {
+            material.emissive = new THREE.Color(0xff5522);
+            material.emissiveIntensity = 0.25;
+        }
     }
     return material;
+}
+
+function createRingShaderMaterial(ringTexture, planetRadiusScaled) {
+    return new THREE.ShaderMaterial({
+        uniforms: {
+            ringMap: { value: ringTexture },
+            sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+            planetPosition: { value: new THREE.Vector3(0, 0, 0) },
+            planetRadius: { value: planetRadiusScaled },
+            ambient: { value: 0.2 },
+            enableShadows: { value: 1.0 }
+        },
+        vertexShader: ss_shaders.ringVertex,
+        fragmentShader: ss_shaders.ringFragment,
+        transparent: true,
+        side: THREE.DoubleSide,
+        depthWrite: false
+    });
+}
+
+function createAuroraMesh(celestialBody) {
+    const radius = celestialBody.radius * nHardCodeScaleFactor * 1.035;
+    const geo = new THREE.SphereGeometry(radius, 64, 64);
+    const mat = new THREE.ShaderMaterial({
+        uniforms: {
+            time: { value: 0.0 },
+            sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+            intensity: { value: 1.0 }
+        },
+        vertexShader: ss_shaders.auroraVertex,
+        fragmentShader: ss_shaders.auroraFragment,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.FrontSide
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'aurora';
+    mesh.rotation.x = Math.PI / 2;
+    return mesh;
 }
 
 function createPlanetRingGeometry( innerRadius = 0.5, outerRadius = 1, thetaSegments = 32, phiSegments = 1, thetaStart = 0, thetaLength = Math.PI * 2)
@@ -1302,7 +1589,7 @@ function getSunMaterial(surfaceTexture, celestialBody)
                 intensity: { value: 1.0 },
                 sunTexture: { value: surfaceTexture },
                 time: { value: 0.0 }, // Add time uniform
-                shader_enable: {value: settings.areShadersEnabled === 'ON' }
+                shader_enable: { value: isShaderOn('shaderSunTurbulence') }
             },
             vertexShader: ss_shaders.sunEmissiveVertex,
             fragmentShader: ss_shaders.sunEmissiveFragment
@@ -1324,33 +1611,47 @@ function getSunMaterial(surfaceTexture, celestialBody)
 
 function getStarGlowMesh( starBody)
 {
-    // Store for lighting calculations
-    //starBody.mesh = sunMesh;
+    // Soft outer glow (always present for stars; stronger with corona option)
+    const glowScale = isShaderOn('shaderSunCorona') ? 1.55 : 1.3;
+    const glowRadius = starBody.radius * nHardCodeScaleFactor * glowScale;
+    const glowGeometry = new THREE.SphereGeometry(glowRadius, 48, 48);
 
-    // Add corona mesh
-    // Define glow radius (slightly larger than the Sun)
-    const glowRadius = starBody.radius * nHardCodeScaleFactor * 1.3; // Adjust scale as needed
-    const glowGeometry = new THREE.SphereGeometry(glowRadius, 32, 32);
-
-    // Define uniforms for the glow shader
     const glowUniforms = {
-        u_color: { value: new THREE.Color(0xffa500) } // Yellow glow, adjustable
+        u_color: { value: new THREE.Color(isShaderOn('shaderSunCorona') ? 0xffb040 : 0xffa500) }
     };
 
-    // Create the glow material
     const glowMaterial = new THREE.ShaderMaterial({
         vertexShader: ss_shaders.sunGlowVertex,
         fragmentShader: ss_shaders.sunGlowFragment,
         uniforms: glowUniforms,
-        side: THREE.BackSide, // Render on the inside to avoid overlapping the Sun
-        blending: THREE.AdditiveBlending, // Add glow to the scene
+        side: THREE.BackSide,
+        blending: THREE.AdditiveBlending,
         transparent: true,
-        depthWrite: false // Prevent glow from interfering with depth buffer
+        depthWrite: false
     });
 
-    // Create the glow mesh
     const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
+    glowMesh.name = 'sunGlow';
     return glowMesh;
+}
+
+function getStarFresnelMesh(starBody) {
+    const radius = starBody.radius * nHardCodeScaleFactor * 1.08;
+    const geo = new THREE.SphereGeometry(radius, 48, 48);
+    const mat = new THREE.ShaderMaterial({
+        vertexShader: ss_shaders.sunGlowVertex,
+        fragmentShader: ss_shaders.sunFresnelFragment,
+        uniforms: {
+            u_color: { value: new THREE.Color(0xffcc66) }
+        },
+        side: THREE.FrontSide,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        depthWrite: false
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'sunFresnel';
+    return mesh;
 }
 
 function createSimpleCelestialBody(celestialBody) {
@@ -1359,12 +1660,13 @@ function createSimpleCelestialBody(celestialBody) {
     const celestialBodyGroup = new THREE.Group();
     let hasAtmosphere = 0;
     let hasRing = 0;
+    const advancedUniforms = [];
 
     //Create the Sphere
     const celestialGeometry = new THREE.SphereGeometry(celestialBody.radius * nHardCodeScaleFactor, 64, 64);
 
     //Load the Textures
-    const {surfaceTexture, normalMap, specularMap, cloudTexture, ringTexture, bumpTexture} = getTexturesForPlanet(celestialBody);
+    const {surfaceTexture, normalMap, specularMap, cloudTexture, ringTexture, bumpTexture, nightMap} = getTexturesForPlanet(celestialBody);
 
     //Create the Celestial Material Based on the Textures
     let celestialMaterial = null;
@@ -1374,10 +1676,8 @@ function createSimpleCelestialBody(celestialBody) {
     }
     else
     {
-        celestialMaterial = createMaterialFromTextures( celestialBody, surfaceTexture, normalMap, specularMap, cloudTexture );
+        celestialMaterial = createMaterialFromTextures( celestialBody, surfaceTexture, normalMap, specularMap, cloudTexture, nightMap );
     }
-    
-    
 
     //Create the Mesh
     simpleCelestialMesh = new THREE.Mesh(celestialGeometry, celestialMaterial);
@@ -1389,83 +1689,102 @@ function createSimpleCelestialBody(celestialBody) {
         simpleCelestialMesh.rotation.x = Math.PI / 2; // 90° rotation around X-axis (horizontal axis)
     }
 
-    //setCelestialBodyTilt(simpleCelestialMesh, celestialBody);
-
     celestialBodyGroup.add(simpleCelestialMesh);
 
-    //if a star, add a glow mesh
+    if (celestialMaterial && celestialMaterial.uniforms && celestialMaterial.uniforms.sunDirection) {
+        advancedUniforms.push(celestialMaterial.uniforms);
+    }
+
+    //if a star, add a glow mesh (+ optional fresnel rim)
     if (celestialBody.type === "star") {
         const glowMesh = getStarGlowMesh(celestialBody);
         celestialBodyGroup.add(glowMesh);
+        if (isShaderOn('shaderSunCorona')) {
+            celestialBodyGroup.add(getStarFresnelMesh(celestialBody));
+        }
     }
 
-    //Add a new mesh to the group if there's an atmosphere
+    // Atmosphere / cloud layer
     if (cloudTexture) {
-        
         hasAtmosphere = 1;
-        // Add cloud layer
-
-        const cloudRadius = celestialBody.radius * nHardCodeScaleFactor * 1.02; // Slightly larger (2% bigger)
+        const cloudRadius = celestialBody.radius * nHardCodeScaleFactor * 1.02;
         const cloudGeometry = new THREE.SphereGeometry(cloudRadius, 64, 64);
 
         const cloudMaterial = new THREE.MeshPhongMaterial({
             map: cloudTexture,
-            transparent: true,         // Enable transparency for clear areas
-            opacity: 0.8,             // Slightly translucent clouds
-            depthWrite: false,         // Prevent z-fighting with surface
-            depthTest: true, // Ensure proper depth testing
+            transparent: true,
+            opacity: 0.8,
+            depthWrite: false,
+            depthTest: true,
             blending: THREE.NormalBlending
         });
 
         const cloudMesh = new THREE.Mesh(cloudGeometry, cloudMaterial);
         cloudMesh.name = "atmosphere";
-        cloudMesh.rotation.x = Math.PI / 2; // 90° rotation around X-axis (horizontal axis)
-
-        //setCelestialBodyTilt(cloudMesh, celestialBody);
-
-        celestialBodyGroup.add(cloudMesh);         // Add clouds as a child of Earth's group
+        cloudMesh.rotation.x = Math.PI / 2;
+        celestialBodyGroup.add(cloudMesh);
     }
 
-    if (ringTexture) 
+    // Earth aurora — child of surface mesh so group child indices stay stable
+    if (celestialBody.name === 'Earth' && isShaderOn('shaderAurora')) {
+        const auroraMesh = createAuroraMesh(celestialBody);
+        // Geometry is absolute radius; as child of surface sphere, scale relative to planet radius
+        const surfaceR = celestialBody.radius * nHardCodeScaleFactor;
+        auroraMesh.scale.setScalar((surfaceR * 1.035) / surfaceR);
+        // Replace geometry radius with surface radius so scale applies cleanly
+        auroraMesh.geometry.dispose();
+        auroraMesh.geometry = new THREE.SphereGeometry(surfaceR, 64, 64);
+        if (auroraMesh.material.uniforms) advancedUniforms.push(auroraMesh.material.uniforms);
+        simpleCelestialMesh.add(auroraMesh);
+    }
+
+    if (ringTexture)
     {
         hasRing = 1;
 
-        // Add rings based on the Inner & Outer radius values
-        const innerRadius = celestialBody.rings[0].inner_radius * nHardCodeScaleFactor; // Inner edge (e.g., 1.2x planet radius)
-        const outerRadius = celestialBody.rings[0].outer_radius * nHardCodeScaleFactor; // Outer edge (e.g., 2.5x planet radius)
-    
-        //Create the ring geometry that pairs with the textures
+        const innerRadius = celestialBody.rings[0].inner_radius * nHardCodeScaleFactor;
+        const outerRadius = celestialBody.rings[0].outer_radius * nHardCodeScaleFactor;
+
         const ringGeometry = createPlanetRingGeometry(innerRadius, outerRadius, 64, 1, 0, Math.PI * 2, 0.05 * nHardCodeScaleFactor);
 
-        //ringGeometry.rotateX(Math.PI / 2);
         ringTexture.minFilter = THREE.NearestFilter;
 
-        const ringMaterial = new THREE.MeshPhongMaterial({
-            map: ringTexture,
-            side: THREE.DoubleSide,   // Render both sides of the ring
-            transparent: true,        // Enable transparency for gaps
-            opacity: .95,             // Overall opacity
-            emissive: 0x111111,       // Slight glow
-            emissiveIntensity: 0.3,
-            alphaTest: 0.05,        // Prevent artifacts at transparent edges
-            depthTest: true, // Ensure proper depth testing
-            blending: THREE.NormalBlending,
-            depthWrite: false  
-        });
+        let ringMaterial;
+        if (isShaderOn('shaderRingLighting')) {
+            const planetRadiusScaled = celestialBody.radius * nHardCodeScaleFactor;
+            ringMaterial = createRingShaderMaterial(ringTexture, planetRadiusScaled);
+            advancedUniforms.push(ringMaterial.uniforms);
+        } else {
+            ringMaterial = new THREE.MeshPhongMaterial({
+                map: ringTexture,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: .95,
+                emissive: 0x111111,
+                emissiveIntensity: 0.3,
+                alphaTest: 0.05,
+                depthTest: true,
+                blending: THREE.NormalBlending,
+                depthWrite: false
+            });
+        }
 
         const ringMesh = new THREE.Mesh(ringGeometry, ringMaterial);
         ringMesh.name = "ring";
-        ringMesh.visible = planetRingsVisible; // Set initial visibility
+        ringMesh.visible = planetRingsVisible;
 
-        //setCelestialBodyTilt(ringMesh, celestialBody);
-
-        celestialBodyGroup.add(ringMesh);           
-        
+        celestialBodyGroup.add(ringMesh);
     }
 
     scene.add(celestialBodyGroup);
 
-    const celestialObject = { mesh : celestialBodyGroup, data: celestialBody, hasAtmosphere: hasAtmosphere, hasRing: hasRing };
+    const celestialObject = {
+        mesh: celestialBodyGroup,
+        data: celestialBody,
+        hasAtmosphere: hasAtmosphere,
+        hasRing: hasRing,
+        advancedUniforms: advancedUniforms
+    };
 
     return celestialObject;
 }
@@ -1895,9 +2214,8 @@ document.getElementById('toggleMoonTrails').textContent = moonTrailsVisible ? 'H
 
 celestialObjects.forEach(obj => {
     if (obj.hasRing) {
-        const ringIndex = obj.hasAtmosphere ? 2 : 1;
-        const ringMesh = obj.mesh.children[ringIndex];
-        if (ringMesh && ringMesh.name === "ring") {
+        const ringMesh = obj.mesh.getObjectByName('ring');
+        if (ringMesh) {
             ringMesh.visible = planetRingsVisible;
         }
     }
@@ -2061,8 +2379,7 @@ function initializeRotationalDynamics(obj)
 
     //Apply the tilt to the rings
     if (obj.hasRing) {
-        const ringIndex = obj.hasAtmosphere ? 2 : 1;
-        const ringMesh = obj.mesh.children[ringIndex];
+        const ringMesh = obj.mesh.getObjectByName('ring') || obj.mesh.children[obj.hasAtmosphere ? 2 : 1];
 
         const ringTiltFromEquatorRAD = obj.data.rings[0].ring_inclination * (Math.PI / 180 );
 
@@ -2166,9 +2483,8 @@ document.getElementById('restartSimulation').addEventListener('click', () => {
             }
         }
         if (obj.hasRing) {
-            const ringIndex = obj.hasAtmosphere ? 2 : 1;
-            const ringMesh = obj.mesh.children[ringIndex];
-            if (ringMesh && ringMesh.name === "ring") {
+            const ringMesh = obj.mesh.getObjectByName('ring');
+            if (ringMesh) {
                 ringMesh.visible = planetRingsVisible;
             }
         }
@@ -2328,13 +2644,12 @@ function getScaleForObject(oCelestialObject){
 
 function updatePlanetScales() {
     celestialObjects.forEach(obj => {
-        const mesh = obj.mesh instanceof THREE.Group ? obj.mesh.children[0] : obj.mesh;
+        const mesh = obj.mesh instanceof THREE.Group
+            ? (obj.mesh.getObjectByName(obj.data.name) || obj.mesh.children[0])
+            : obj.mesh;
 
-        const atmIndx = obj.hasAtmosphere ? 1 : 0;
-        const ringIndx = obj.hasRing ? atmIndx + 1 : 0;
-
-        const atmMesh = obj.hasAtmosphere ? obj.mesh.children[atmIndx] : null;
-        const ringMesh = obj.hasRing ? obj.mesh.children[ringIndx] : null;
+        const atmMesh = obj.mesh.getObjectByName ? obj.mesh.getObjectByName('atmosphere') : null;
+        const ringMesh = obj.mesh.getObjectByName ? obj.mesh.getObjectByName('ring') : null;
 
         // Scale only planets (not Sun)
         if (obj.data.orbitalElements /*&& obj.data.name !== "Sun"*/) {
@@ -3861,10 +4176,44 @@ function animate() {
     }
 
     
+    // Cloud UV scroll rate (radians-equivalent texture offset)
+    const cloudUvScroll = isShaderOn('shaderCloudMotion') ? currentTime * 0.000015 : 0.0;
+    const sunOrigin = new THREE.Vector3(0, 0, 0);
+
     let nStarCount = 0;
     celestialObjects.forEach(obj => {
 
         const rotationAngle = obj.rotationalOmega * simulationTime;
+
+        // Update advanced shader uniforms (sun direction from body → sun)
+        if (obj.advancedUniforms && obj.advancedUniforms.length) {
+            const bodyPos = new THREE.Vector3();
+            obj.mesh.getWorldPosition(bodyPos);
+            // Light comes from the sun (origin) toward the body: direction to light = -bodyPos
+            const sunDir = sunOrigin.clone().sub(bodyPos);
+            if (sunDir.lengthSq() < 1e-12) {
+                sunDir.set(0, 1, 0);
+            } else {
+                sunDir.normalize();
+            }
+            // For bodies near origin (sun), use a fixed direction
+            if (obj.data.type === 'star') {
+                sunDir.set(0, 0, 1);
+            }
+            const planetRadiusScaled = (obj.data.radius || 0) * nHardCodeScaleFactor *
+                (typeof getScaleForObject === 'function' ? (getScaleForObject(obj).finalPlanetScale || 1) : 1);
+
+            obj.advancedUniforms.forEach(u => {
+                if (u.sunDirection) u.sunDirection.value.copy(sunDir);
+                if (u.planetPosition) u.planetPosition.value.copy(bodyPos);
+                if (u.planetRadius) u.planetRadius.value = planetRadiusScaled;
+                if (u.time) u.time.value = currentTime * 0.001;
+                if (u.uvOffset) u.uvOffset.value = cloudUvScroll;
+                if (u.ambientColor) {
+                    u.ambientColor.value.set(ambientIntensity, ambientIntensity, ambientIntensity);
+                }
+            });
+        }
 
         if (obj.data.type === "star") {
 
@@ -3893,12 +4242,9 @@ function animate() {
         
             obj.mesh.position.copy(pos);
 
-            const atmIndx = obj.hasAtmosphere ? 1 : 0;
-            const ringIndx = obj.hasRing ? atmIndx + 1 : 0;
-
-            const planetMesh = obj.mesh.children[0];
-            const atmMesh = obj.hasAtmosphere ? obj.mesh.children[atmIndx] : null;
-            const ringMesh = obj.hasRing ? obj.mesh.children[ringIndx] : null;
+            const planetMesh = obj.mesh.getObjectByName(obj.data.name) || obj.mesh.children[0];
+            const atmMesh = obj.mesh.getObjectByName('atmosphere');
+            const ringMesh = obj.mesh.getObjectByName('ring');
 
             // Apply rotation with tilt
             planetMesh.quaternion.copy(obj.initialQuaternion);  // Reset to tilted orientation
@@ -4179,7 +4525,11 @@ function animate() {
         orbitControls.update();
     }
     
-    renderer.render(scene, camera);
+    if (bloomPipeline) {
+        bloomPipeline.render(scene, camera);
+    } else {
+        renderer.render(scene, camera);
+    }
 }
 animate();
 
@@ -4367,9 +4717,8 @@ document.getElementById('togglePlanetRings').addEventListener('click', () => {
     planetRingsVisible = !planetRingsVisible;
     celestialObjects.forEach(obj => {
         if (obj.hasRing) {
-            const ringIndex = obj.hasAtmosphere ? 2 : 1;
-            const ringMesh = obj.mesh.children[ringIndex];
-            if (ringMesh && ringMesh.name === "ring") {
+            const ringMesh = obj.mesh.getObjectByName('ring');
+            if (ringMesh) {
                 ringMesh.visible = planetRingsVisible;
             }
         }
@@ -4526,6 +4875,49 @@ function generateSettingsHTML() {
         });
     });
 }*/
+function generateShaderOptionRowsHTML() {
+    return SHADER_OPTION_KEYS.map(key => `
+        <div class="shader-option-row">
+            <label>${SHADER_OPTION_LABELS[key]}:</label>
+            <div class="settings-group" data-setting="${key}">
+                <button class="settings-button" data-value="ON">ON</button>
+                <button class="settings-button" data-value="OFF">OFF</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function ensureAdvancedShaderPanel() {
+    const popup = document.getElementById('settingsPopup');
+    let panel = document.getElementById('advancedShaderPanel');
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'advancedShaderPanel';
+        panel.className = 'advanced-shader-panel';
+        panel.setAttribute('aria-hidden', 'true');
+        popup.appendChild(panel);
+    }
+    panel.innerHTML = `
+        <h4>Advanced Shader Options</h4>
+        ${generateShaderOptionRowsHTML()}
+    `;
+    return panel;
+}
+
+function bindSettingsGroupClicks(root) {
+    (root || document).querySelectorAll('.settings-group').forEach(group => {
+        // Avoid double-binding if regenerate
+        if (group.dataset.bound === '1') return;
+        group.dataset.bound = '1';
+        group.addEventListener('click', (event) => {
+            if (event.target.classList.contains('settings-button')) {
+                group.querySelectorAll('.settings-button').forEach(btn => btn.classList.remove('selected'));
+                event.target.classList.add('selected');
+            }
+        });
+    });
+}
+
 function generateSettingsHTML() {
     const settingsContent = document.getElementById('settingsContent');
     settingsContent.innerHTML = `
@@ -4566,9 +4958,12 @@ function generateSettingsHTML() {
         </div>
         <div>
             <label>Enable Advanced Shaders:</label>
-            <div class="settings-group" data-setting="areShadersEnabled">
-                <button class="settings-button" data-value="ON">ON</button>
-                <button class="settings-button" data-value="OFF">OFF</button>
+            <div class="settings-group-row">
+                <div class="settings-group" data-setting="areShadersEnabled">
+                    <button class="settings-button" data-value="ON">ON</button>
+                    <button class="settings-button" data-value="OFF">OFF</button>
+                </div>
+                <button type="button" id="toggleShaderPanel" class="shader-panel-arrow" title="Advanced shader options">▶</button>
             </div>
         </div>
         <div>
@@ -4588,15 +4983,30 @@ function generateSettingsHTML() {
         </div>
     `;
 
-    // Add click handlers for selection
-    document.querySelectorAll('.settings-group').forEach(group => {
-        group.addEventListener('click', (event) => {
-            if (event.target.classList.contains('settings-button')) {
-                group.querySelectorAll('.settings-button').forEach(btn => btn.classList.remove('selected'));
-                event.target.classList.add('selected');
-            }
-        });
-    });
+    const panel = ensureAdvancedShaderPanel();
+    panel.classList.remove('open');
+    panel.setAttribute('aria-hidden', 'true');
+
+    bindSettingsGroupClicks(document.getElementById('settingsPopup'));
+
+    const arrow = document.getElementById('toggleShaderPanel');
+    if (arrow) {
+        arrow.classList.remove('open');
+        arrow.textContent = '▶';
+        arrow.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const isOpen = panel.classList.toggle('open');
+            panel.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
+            arrow.classList.toggle('open', isOpen);
+            arrow.textContent = isOpen ? '◀' : '▶';
+        };
+    }
+}
+
+function selectSettingButton(settingKey, value) {
+    const btn = document.querySelector(`.settings-group[data-setting="${settingKey}"] .settings-button[data-value="${value}"]`);
+    if (btn) btn.classList.add('selected');
 }
 
 function loadSettings() {
@@ -4608,26 +5018,23 @@ function loadSettings() {
     const useComplexMeshes = getCookie('useComplexMeshes') || defaultSettings.useComplexMeshes;
     const useLogDepthBuffer = getCookie('useLogDepthBuffer') || defaultSettings.useLogDepthBuffer;
 
-    const pixelRatioBtn = document.querySelector(`.settings-group[data-setting="pixelRatio"] .settings-button[data-value="${pixelRatio}"]`);
-    if (pixelRatioBtn) pixelRatioBtn.classList.add('selected');
+    selectSettingButton('pixelRatio', pixelRatio);
+    selectSettingButton('anisotropicFiltering', anisotropicFiltering);
+    selectSettingButton('antiAliasing', antiAliasing);
+    selectSettingButton('textureSize', textureSize);
+    selectSettingButton('areShadersEnabled', areShadersEnabled);
+    selectSettingButton('useComplexMeshes', useComplexMeshes);
+    selectSettingButton('useLogDepthBuffer', useLogDepthBuffer);
 
-    const anisotropicBtn = document.querySelector(`.settings-group[data-setting="anisotropicFiltering"] .settings-button[data-value="${anisotropicFiltering}"]`);
-    if (anisotropicBtn) anisotropicBtn.classList.add('selected');
+    SHADER_OPTION_KEYS.forEach(key => {
+        const value = getCookie(key) || defaultSettings[key];
+        selectSettingButton(key, value);
+    });
+}
 
-    const antiAliasingBtn = document.querySelector(`.settings-group[data-setting="antiAliasing"] .settings-button[data-value="${antiAliasing}"]`);
-    if (antiAliasingBtn) antiAliasingBtn.classList.add('selected');
-
-    const textureSizeBtn = document.querySelector(`.settings-group[data-setting="textureSize"] .settings-button[data-value="${textureSize}"]`);
-    if (textureSizeBtn) textureSizeBtn.classList.add('selected');
-
-    const shadersEnabledBtn = document.querySelector(`.settings-group[data-setting="areShadersEnabled"] .settings-button[data-value="${areShadersEnabled}"]`);
-    if (shadersEnabledBtn) shadersEnabledBtn.classList.add('selected');
-
-    const complexMeshesBtn = document.querySelector(`.settings-group[data-setting="useComplexMeshes"] .settings-button[data-value="${useComplexMeshes}"]`);
-    if (complexMeshesBtn) complexMeshesBtn.classList.add('selected');
-
-    const logDepthBufferBtn = document.querySelector(`.settings-group[data-setting="useLogDepthBuffer"] .settings-button[data-value="${useLogDepthBuffer}"]`);
-    if (logDepthBufferBtn) logDepthBufferBtn.classList.add('selected');
+function getSelectedSetting(settingKey) {
+    const el = document.querySelector(`.settings-group[data-setting="${settingKey}"] .settings-button.selected`);
+    return el ? el.getAttribute('data-value') : null;
 }
 
 document.getElementById('openSettings').addEventListener('click', () => {
@@ -4637,26 +5044,36 @@ document.getElementById('openSettings').addEventListener('click', () => {
 });
 
 document.getElementById('applySettings').addEventListener('click', () => {
-    const pixelRatio = document.querySelector('.settings-group[data-setting="pixelRatio"] .settings-button.selected').getAttribute('data-value');
-    const anisotropicFiltering = document.querySelector('.settings-group[data-setting="anisotropicFiltering"] .settings-button.selected').getAttribute('data-value');
-    const antiAliasing = document.querySelector('.settings-group[data-setting="antiAliasing"] .settings-button.selected').getAttribute('data-value');
-    const textureSize = document.querySelector('.settings-group[data-setting="textureSize"] .settings-button.selected').getAttribute('data-value');
-    const areShadersEnabled = document.querySelector('.settings-group[data-setting="areShadersEnabled"] .settings-button.selected').getAttribute('data-value');
-    const useComplexMeshes = document.querySelector('.settings-group[data-setting="useComplexMeshes"] .settings-button.selected').getAttribute('data-value');
-    const useLogDepthBuffer = document.querySelector('.settings-group[data-setting="useLogDepthBuffer"] .settings-button.selected').getAttribute('data-value');
+    const pixelRatio = getSelectedSetting('pixelRatio');
+    const anisotropicFiltering = getSelectedSetting('anisotropicFiltering');
+    const antiAliasing = getSelectedSetting('antiAliasing');
+    const textureSize = getSelectedSetting('textureSize');
+    const areShadersEnabled = getSelectedSetting('areShadersEnabled');
+    const useComplexMeshes = getSelectedSetting('useComplexMeshes');
+    const useLogDepthBuffer = getSelectedSetting('useLogDepthBuffer');
 
     setCookie('pixelRatio', pixelRatio, 30);
     setCookie('anisotropicFiltering', anisotropicFiltering, 30);
     setCookie('antiAliasing', antiAliasing, 30);
     setCookie('textureSize', textureSize, 30);
-
     setCookie('areShadersEnabled', areShadersEnabled, 30);
     setCookie('useComplexMeshes', useComplexMeshes, 30);
     setCookie('useLogDepthBuffer', useLogDepthBuffer, 30);
+
+    SHADER_OPTION_KEYS.forEach(key => {
+        const value = getSelectedSetting(key) || defaultSettings[key];
+        setCookie(key, value, 30);
+    });
+
     location.reload(); // Reload to apply new settings
 });
 
 document.getElementById('cancelSettings').addEventListener('click', () => {
+    const panel = document.getElementById('advancedShaderPanel');
+    if (panel) {
+        panel.classList.remove('open');
+        panel.setAttribute('aria-hidden', 'true');
+    }
     document.getElementById('settingsPopup').style.display = 'none';
 });
 
@@ -5189,6 +5606,10 @@ function onWindowResize() {
 
     // Optional: Ensure pixel ratio remains consistent
     renderer.setPixelRatio(window.devicePixelRatio * settings.pixelRatio);
+
+    if (bloomPipeline) {
+        bloomPipeline.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
+    }
 }
 
 // Attach resize event listener

@@ -12,7 +12,7 @@ Update this file when files are added or removed, CDN / external URLs change,
 special entry points change, or a file’s role changes significantly.
 Record the corresponding work in VERSION_TRACKING.txt (session block).
 
-Last aligned with: S-00001 (2026-07-11)
+Last aligned with: S-00004 (2026-07-11)
 
 
 ================================================================================
@@ -27,11 +27,14 @@ solar_system.html
 
 solar_system.js
   Main application logic: WebGL renderer setup, scene, bodies, time integration,
-  camera modes, UI event wiring, cookie-based settings, texture path selection,
-  focus/search, trails, orbits, asteroid sprites. Primary runtime module.
+  camera modes, UI event wiring, cookie-based settings (including advanced
+  shader master + discrete sub-options and slide-out panel), texture path
+  selection, advanced materials/bloom when enabled, focus/search, trails,
+  orbits, asteroid sprites. Primary runtime module.
 
 solar_system_style.css
-  Layout and styling for menus, popups, controls, info panels, and overlays.
+  Layout and styling for menus, popups, controls, info panels, overlays, and
+  the Advanced Shader Options slide-out panel (arrow + panel animation).
 
 solar_constants.js
   Celestial body catalog and simulation constants (G, Kepler precision, trail
@@ -50,9 +53,11 @@ solar_image_list.js
   Lists of photograph filenames under images/ used by the Photos panel.
 
 shaders.js
-  Custom GLSL materials: sun emissive / corona / glow / fresnel; orbit trail
-  materials (planet, moon, asteroid), including logarithmic-depth variants.
-  Exports ss_shaders registry used by solar_system.js.
+  Custom GLSL materials: sun emissive / corona / glow / fresnel; orbit trails
+  (planet, moon, asteroid); advanced planet (soft lighting), Earth day/night,
+  ring lighting + planet umbra, aurora, and fullscreen bloom extract/blur/combine.
+  Logarithmic-depth variants where needed. Exports ss_shaders registry used by
+  solar_system.js.
 
 solar_system_populate_track.js
   Helpers for Track submenu population and orbital / equatorial plane meshes
@@ -177,6 +182,7 @@ Typical contents per tier:
   - Atmosphere overlays (atmosphere_*_texture.*)
   - Ring maps (jupiter/saturn/uranus/neptune_ring_*)
   - Normal / specular / bump maps (normal_map_*, specular_map_earth, etc.)
+  - Earth night lights (earth_night_lights.png) for advanced Earth night-side shader
   - Sun textures, star / milky-way backdrops
   - textures_*/asteroid/ — DDS (and some PNG) asteroid surface packs
 

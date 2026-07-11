@@ -63,6 +63,33 @@ CHANGE LOG
 ----------
 ################################################################################
 2026-07-11
+S-00004
+  1. [.] VERSION_TRACKING.txt — complete session log for advanced-shader work (S-00002–S-00004)
+  2. [.] README.md — document advanced shader master toggle, slide-out panel, per-effect options, assets, and render settings
+  3. [.] FILE_MANIFEST.txt — align inventory with advanced shaders / night lights (last aligned S-00004)
+################################################################################
+################################################################################
+2026-07-11
+S-00003
+  1. [.] solar_system.js — remove Atmospheric Scattering option and scatter materials; atmospheres always use Phong cloud shells
+  2. [.] shaders.js — remove unused atmosphere limb GLSL
+  3. [.] README.md / FILE_MANIFEST.txt — drop atmospheric scattering from advanced-shader docs
+################################################################################
+################################################################################
+2026-07-11
+S-00002
+  1. [.] solar_system.js — master Advanced Shaders + discrete sub-options (cookies); isShaderOn(); Earth day/night, soft terminator, ring lighting/shadow, sun turbulence/corona+fresnel, bloom/ACES, aurora, Io glow; slide-out panel UI (generateSettingsHTML / load / apply)
+  2. [.] shaders.js — GLSL: soft planet, Earth day/night, rings+umbra, aurora, bloom extract/blur/combine; sun shaders already present
+  3. [.] solar_system_style.css — ▶ arrow, .advanced-shader-panel slide-out, responsive stack on narrow viewports
+  4. [.] solar_constants.js — Earth nightMap: earth_night_lights.png
+  5. [textures_lo] earth_night_lights.png — procedural city-lights map (lo tier)
+  6. [textures_md] earth_night_lights.png — procedural city-lights map (md tier)
+  7. [textures_hi] earth_night_lights.png — procedural city-lights map (hi tier)
+  8. [textures_mx] earth_night_lights.png — procedural city-lights map (mx tier)
+  9. [.] README.md / FILE_MANIFEST.txt — first pass documenting advanced shader options and night-light assets
+################################################################################
+################################################################################
+2026-07-11
 S-00001
   1. [.] README.md — initial project README (overview, run, features, layout)
   2. [.] VERSION_TRACKING.txt — session-based change log with maintenance rules
