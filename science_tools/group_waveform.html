@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Group Waveform Visualization</title>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <style>
+        canvas {
+            border: 1px solid black;
+            margin: 5px;
+            margin-bottom: 0px;
+            cursor: grab;
+        }
+        .controls {
+            margin: 10px;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            width: 800px;
+        }
+        .controls_row {
+            margin: 10px;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: row;
+            width: 800px;
+        }
+        .slider-container {
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+        }
+        .slider-container label {
+            width: 200px;
+            margin-right: 10px;
+        }
+        .slider-container input[type="range"] {
+            flex-grow: 1;
+            width: 6.25%;
+        }
+        .toggle-buttons {
+            display: flex;
+            gap: 5px;
+        }
+        .zoom-pan-buttons {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 8px 16px;
+            margin: 10px 0;
+            cursor: pointer;
+            width: 150px;
+            height: 35px;
+        }
+        .zoom-pan-buttons button {
+            padding: 4px 8px;
+            width: 60px;
+            font-size: 12px;
+        }
+        .zoom-pan-buttons .icon-button {
+            font-size: 16px;
+            padding: 4px;
+            width: 40px;
+        }
+        .equations {
+            margin: 20px;
+            font-family: Arial, sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <div class="equations">
+        <p>Envelope (red): \( \Psi_e(x,t) = A \cos\left(\frac{\pi (x - v_g t)}{\lambda/2}\right) \)</p>
+        <p>Carrier (blue): \( \Psi_c(x,t) = A \cos\left(\frac{\pi (x - v_g t)}{\lambda/2}\right) \sin\left(\frac{2\pi f (x - v_p t)}{\lambda} + \phi\right) \)</p>
+    </div>
+    <canvas id="waveCanvas" width="900" height="400"></canvas>
+    <div class="controls">
+        <div class="controls_row">
+            <div class="zoom-pan-buttons">
+                <button id="zoomIn" class="icon-button">🔍+</button>
+                <button id="zoomOut" class="icon-button">🔍-</button>
+                <button id="home" class="icon-button">🏠</button>
+            </div>
+            <div class="toggle-buttons">
+                <button id="toggleAnimation">Stop Anim.</button>
+                <button id="toggleEnvelope">Toggle \( \Psi_e \)</button>
+                <button id="toggleCarrier">Toggle \( \Psi_c \)</button>
+                <button id="resetSliders">Reset Sliders</button>
+            </div>
+        </div>
+        <div class="slider-container">
+            <label>(\( A \)) Amplitude: <span id="ampValue">1.0</span></label>
+            <input type="range" id="amplitude" min="0.1" max="10" step="0.1" value="1">
+        </div>
+        <div class="slider-container">
+            <label>(\( \lambda \)) Wavelength: <span id="wlValue">4</span></label>
+            <input type="range" id="wavelength" min="0" max="30" step=".5" value="4">
+        </div>
+        <div class="slider-container">
+            <label>(\( f \)) Frequency: <span id="freqValue">3.0</span></label>
+            <input type="range" id="frequency" min="-4" max="4" step="0.1" value="3.0">
+        </div>
+        <div class="slider-container">
+            <label>(\( v_g \)) Group Velocity: <span id="gvValue">1.0</span>\( \pi \)</label>
+            <input type="range" id="groupVelocity" min="-3" max="3" step="0.1" value="1">
+        </div>
+        <div class="slider-container">
+            <label>(\( v_p \)) Phase Velocity: <span id="pvValue">1.0</span>\( \pi \)</label>
+            <input type="range" id="phaseVelocity" min="-3" max="3" step="0.1" value="1">
+        </div>
+        <div class="slider-container">
+            <label>(\( \phi \)) Phase Difference: <span id="phaseValue">0</span>\( \pi \)</label>
+            <input type="range" id="phaseDiff" min="-2" max="2" step="0.1" value="0">
+        </div>
+        <div class="slider-container">
+            <label>(\( t \)) Animation Speed: <span id="speedValue">0.02</span></label>
+            <input type="range" id="animationSpeed" min="0.0" max="1" step="0.02" value=".01">
+        </div>
+    </div>
+    
+
+    <script>
+        const canvas = document.getElementById('waveCanvas');
+        const ctx = canvas.getContext('2d');
+        const toggleButton = document.getElementById('toggleAnimation');
+        const toggleEnvelopeButton = document.getElementById('toggleEnvelope');
+        const toggleCarrierButton = document.getElementById('toggleCarrier');
+        const zoomInButton = document.getElementById('zoomIn');
+        const zoomOutButton = document.getElementById('zoomOut');
+        const homeButton = document.getElementById('home');
+        const resetSlidersButton = document.getElementById('resetSliders');
+        const sliders = {
+            amplitude: document.getElementById('amplitude'),
+            wavelength: document.getElementById('wavelength'),
+            frequency: document.getElementById('frequency'),
+            groupVelocity: document.getElementById('groupVelocity'),
+            phaseVelocity: document.getElementById('phaseVelocity'),
+            animationSpeed: document.getElementById('animationSpeed'),
+            phaseDiff: document.getElementById('phaseDiff')
+        };
+        const valueDisplays = {
+            amplitude: document.getElementById('ampValue'),
+            wavelength: document.getElementById('wlValue'),
+            frequency: document.getElementById('freqValue'),
+            groupVelocity: document.getElementById('gvValue'),
+            phaseVelocity: document.getElementById('pvValue'),
+            animationSpeed: document.getElementById('speedValue'),
+            phaseDiff: document.getElementById('phaseValue')
+        };
+
+        let time = 0;
+        let isAnimating = true;
+        let showEnvelope = true;
+        let showCarrier = true;
+        let animationFrameId = null;
+        let zoomLevel = 20;
+        let panOffsetX = 0;
+        let panOffsetY = 0;
+        let isDragging = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        // Default slider values
+        const defaultValues = {
+            amplitude: 1,
+            wavelength: 4,
+            frequency: 3.0,
+            groupVelocity: 1.0,
+            phaseVelocity: 1.0,
+            animationSpeed: .02,
+            phaseDiff: 0
+        };
+
+        // Update display values and redraw when sliders change
+        Object.keys(sliders).forEach(param => {
+            sliders[param].addEventListener('input', () => {
+                valueDisplays[param].textContent = param === 'phaseDiff' ? 
+                    sliders[param].value : sliders[param].value;
+                drawWave();
+            });
+        });
+
+        // Toggle animation
+        toggleButton.addEventListener('click', () => {
+            isAnimating = !isAnimating;
+            toggleButton.textContent = isAnimating ? 'Stop Anim.' : 'Start Anim.';
+            if (isAnimating) {
+                animate();
+            } else {
+                cancelAnimationFrame(animationFrameId);
+            }
+        });
+
+        // Toggle envelope visibility
+        toggleEnvelopeButton.addEventListener('click', () => {
+            showEnvelope = !showEnvelope;
+            //toggleEnvelopeButton.textContent = showEnvelope ? 'Hide \( \Psi_e \)' : 'Show \( \Psi_e \)';
+            drawWave();
+        });
+
+        // Toggle carrier visibility
+        toggleCarrierButton.addEventListener('click', () => {
+            showCarrier = !showCarrier;
+            //toggleCarrierButton.textContent = showCarrier ? 'Hide \( \Psi_c \)' : 'Show \( \Psi_c \)';
+            drawWave();
+        });
+
+        // Zoom in
+        zoomInButton.addEventListener('click', () => {
+            zoomLevel *= 1.2;
+            drawWave();
+        });
+
+        // Zoom out
+        zoomOutButton.addEventListener('click', () => {
+            zoomLevel /= 1.2;
+            drawWave();
+        });
+
+        // Reset panning and zoom
+        homeButton.addEventListener('click', () => {
+            panOffsetX = 0;
+            panOffsetY = 0;
+            zoomLevel = 20;
+            drawWave();
+        });
+
+        // Reset sliders to default values
+        resetSlidersButton.addEventListener('click', () => {
+            Object.keys(defaultValues).forEach(param => {
+                sliders[param].value = defaultValues[param];
+                valueDisplays[param].textContent = param === 'phaseDiff' ? 
+                    defaultValues[param] : defaultValues[param];
+            });
+            drawWave();
+        });
+
+        // Mouse dragging for panning (x and y)
+        canvas.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            canvas.style.cursor = 'grabbing';
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const deltaX = e.clientX - lastX;
+                const deltaY = e.clientY - lastY;
+                panOffsetX -= deltaX;
+                panOffsetY -= deltaY;
+                lastX = e.clientX;
+                lastY = e.clientY;
+                drawWave();
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            isDragging = false;
+            canvas.style.cursor = 'grab';
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            isDragging = false;
+            canvas.style.cursor = 'grab';
+        });
+
+        function drawWave() {
+            const width = canvas.width;
+            const height = canvas.height;
+            const centerY = height / 2;
+            const xOffset = 70;
+
+            // Clear canvas
+            ctx.clearRect(0, 0, width, height);
+
+            // Get slider values
+            const amplitude = parseFloat(sliders.amplitude.value);
+            const wavelength = parseFloat(sliders.wavelength.value);
+            const frequency = parseFloat(sliders.frequency.value);
+            const groupVelocity = parseFloat(sliders.groupVelocity.value) * Math.PI;
+            const phaseVelocity = parseFloat(sliders.phaseVelocity.value) * Math.PI;
+            const phaseDiff = parseFloat(sliders.phaseDiff.value) * Math.PI;
+
+            // Draw envelope (group wave) if visible
+            if (showEnvelope) {
+                ctx.beginPath();
+                ctx.strokeStyle = 'red';
+                ctx.lineWidth = 1;
+                for (let x = -xOffset; x < width - xOffset; x++) {
+                    const scaledX = (x - panOffsetX) / zoomLevel;
+                    const envelope = amplitude * Math.cos((scaledX - groupVelocity * time) * Math.PI / (wavelength * 2));
+                    const y = centerY - envelope * 50 + panOffsetY;
+                    (x === -xOffset) ? ctx.moveTo(x + xOffset, y) : ctx.lineTo(x + xOffset, y);
+                }
+                ctx.stroke();
+            }
+
+            // Draw carrier wave if visible
+            if (showCarrier) {
+                ctx.beginPath();
+                ctx.strokeStyle = 'blue';
+                ctx.lineWidth = 1;
+                for (let x = -xOffset; x < width - xOffset; x++) {
+                    const scaledX = (x - panOffsetX) / zoomLevel;
+                    const envelope = amplitude * Math.cos((scaledX - groupVelocity * time) * Math.PI / (wavelength * 2));
+                    const carrier = Math.sin(2 * Math.PI * frequency * (scaledX - phaseVelocity * time) / wavelength + phaseDiff);
+                    const y = centerY - envelope * carrier * 50 + panOffsetY;
+                    (x === -xOffset) ? ctx.moveTo(x + xOffset, y) : ctx.lineTo(x + xOffset, y);
+                }
+                ctx.stroke();
+            }
+
+            // Draw axes
+            ctx.beginPath();
+            ctx.strokeStyle = 'gray';
+            ctx.lineWidth = 0.5;
+            ctx.moveTo(xOffset, centerY + panOffsetY);  // x-axis
+            ctx.lineTo(width, centerY + panOffsetY);
+            ctx.moveTo(xOffset, 0);        // y-axis
+            ctx.lineTo(xOffset, height);
+            ctx.stroke();
+
+            // Add x-axis labels and ticks (position)
+            ctx.fillStyle = 'black';
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'center';
+            for (let x = 0; x <= width - xOffset; x += 5 * zoomLevel) {
+                const xPos = x + xOffset + panOffsetX;
+                if (xPos >= xOffset && xPos <= width) {
+                    ctx.beginPath();
+                    ctx.moveTo(xPos, centerY + panOffsetY - 5);
+                    ctx.lineTo(xPos, centerY + panOffsetY + 5);
+                    ctx.stroke();
+                    ctx.fillText(Math.round(x / zoomLevel), xPos, centerY + panOffsetY + 15);
+                }
+            }
+
+            // Add y-axis labels and ticks (amplitude)
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            for (let y = -2; y <= 2; y += 0.5) {
+                const yPos = centerY - y * 50 + panOffsetY;
+                ctx.beginPath();
+                ctx.moveTo(xOffset - 5, yPos);
+                ctx.lineTo(xOffset + 5, yPos);
+                ctx.stroke();
+                ctx.fillText(y.toFixed(1), xOffset - 10, yPos);
+            }
+
+            // Add axis descriptions
+            ctx.textAlign = 'center';
+            ctx.fillText('Position (x)', width/2 + xOffset/2, height - 10 + panOffsetY);
+            ctx.save();
+            ctx.rotate(-Math.PI/2);
+            ctx.fillText('Amplitude', -height/2 - panOffsetY, xOffset - 45);
+            ctx.restore();
+        }
+
+        // Animation loop
+        function animate() {
+            if (isAnimating) {
+                time += parseFloat(sliders.animationSpeed.value);
+                drawWave();
+                animationFrameId = requestAnimationFrame(animate);
+            }
+        }
+
+        // Start animation
+        animate();
+    </script>
+</body>
+</html>

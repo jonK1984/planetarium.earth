@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="initial-scale=.5, maximum-scale=.5, minimum-scale=.5, user-scalable=no">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+    <title>Planetarium: Solar System Simulation</title>
+    <link rel="stylesheet" href="./solar_system_style.css">
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="dateTimeLabel"></div>
+    <div id="fpsCounter"></div>
+    <div id="timeRateLabel"></div>
+    <!-- Hamburger Menu -->
+    <div id="menuContainer">
+        <button id="menuToggle" class="hamburger button">☰</button>
+        <div id="menu" class="menu">
+            <div class="submenu-container">
+                <button id="trackSubmenuToggle" class="button">Track</button>
+                <div id="trackSubmenu" class="submenu">
+                    <!-- Populated dynamically -->
+                </div>
+            </div>
+            <div class="submenu-container">
+                <button id="videoSubmenuToggle" class="button">Video</button>
+                <div id="videoSubmenu" class="submenu">
+                    <button id="openSettings" class="button">Render Settings</button>
+                    <button id="toggleControlSize" class="button">Larger Controls</button>
+                    <button id="toggleFPSCounter" class="button">Hide FPS</button>
+                    <button id="toggleAsteroidBelts" class="button">Hide Asteroid Sprites</button>
+                    <button id="togglePlanetOrbits" class="button">Show Planet Orbits</button>
+                    <button id="toggleMoonOrbits" class="button">Show Moon Orbits</button>
+                    <button id="toggleAsteroidOrbits" class="button">Show Asteroid Orbits</button>
+                    <button id="togglePlanetTrails" class="button">Hide Planet Trails</button>
+                    <button id="toggleMoonTrails" class="button">Hide Moon Trails</button>
+                    <button id="toggleAsteroidTrails" class="button">Hide Asteroid Trails</button>
+                    <button id="togglePlanetRings" class="button">Hide Planet Rings</button>
+                    <button id="toggleBackdrop" class="button">Hide Backdrop</button>
+                    <button id="increaseAmbient" class="button">Increase Ambient</button>
+                    <button id="decreaseAmbient" class="button">Decrease Ambient</button>
+                </div>
+            </div>
+            <div class="submenu-container">
+                <button id="simulationSubmenuToggle" class="button">Simulation</button>
+                <div id="simulationSubmenu" class="submenu">
+                    <button id="restartWithGettingStarted" class="button">Restart with 'Getting Started'</button>
+                    <button id="restartSimulation" class="button">Restart Simulation</button>
+                    <button id="resetCameraPosition" class="button">Reset Camera Position</button>
+                    <button id="scalePlanets" class="button">Increase Planet Scale</button>
+                    <button id="decreaseScale" class="button">Decrease Planet Scale</button>
+                    <button id="setPlanetScaleOne" class="button">Set Planet Scale 1:1</button>
+                    <button id="resetPlanetScale" class="button">Default Planet Scale</button>
+                    
+                </div>
+            </div>
+            
+            <div class="submenu-container">
+                <button id="physicsMenuToggle" class="button">Physics</button>
+                <div id="physicsSubmenu" class="submenu">
+                    <button id="showConstants" class="button">Constants</button>
+                    <button id="showEquations" class="button">Equations</button>
+                </div>
+            </div>
+            <!-- In the menuContainer div, replace the existing Help button -->
+            <div class="submenu-container">
+                <button id="helpSubmenuToggle" class="button">Help</button>
+                <div id="helpSubmenu" class="submenu">
+                    <button id="showSimulationControls" class="button">Simulation Controls</button>
+                    <button id="showOrbitalControls" class="button">Orbital Controls</button>
+                    <button id="showFlightControls" class="button">Flight Controls</button>
+                    
+                </div>
+            </div>
+            <!-- Add Acknowledgements button -->
+            <button id="acknowledgementsButton" class="button">Acknowledgements</button>
+            <!-- Add About button -->
+            <button id="aboutButton" class="button">About</button>
+        </div>
+    </div>
+
+    <!-- Constants Popup -->
+    <div id="constantsPopup" class="popup draggable" style="position: absolute; display: none; color: white; background: rgba(0, 0, 0, 0.8); padding: 20px; border-radius: 5px; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 850px; max-height: 80vh; z-index: 20;">
+        <div id="constantsHeader">
+            <h3 style="margin: 0 0 10px 0;">Physical Constants</h3>
+            <div id="constantsButtons" style="margin-bottom: 10px;">
+                <button id="toggleConstantsUnits" class="button">Toggle Units</button>
+                <button onclick="document.getElementById('constantsPopup').style.display='none'" class="button">Close</button>
+            </div>
+        </div>
+        <div id="constantsSubContainer">
+            <table id="constantsTable" style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr><th>Name</th><th>Type</th><th>Mass</th><th>a</th><th>e</th><th>i (°)</th><th>Ω (°)</th><th>ω (°)</th><th>M₀ (°)</th></tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Equations Popup -->
+    <div id="equationsPopup" class="popup" style="position: absolute; display: none; color: white; background: rgba(0, 0, 0, 0.8); padding: 10px; border-radius: 5px; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 700px; max-height: 88vh; overflow-y: auto; z-index: 20;">
+        <h3>Simulation Equations</h3>
+        <button onclick="document.getElementById('equationsPopup').style.display='none'" class="button">Close</button>
+        <div id="equationsContent" style="border: solid; margin-top: 10px; padding: 10px;"></div>
+       
+    </div>
+
+    <!-- Main Controls (kept on screen) -->
+    <div id="mainControls" >
+        <button id="pauseResume" class="button">⏸</button>
+        <button id="timeForward" class="button">T +</button>
+        <button id="timeBackward" class="button">T -</button>
+    </div>
+
+    <div id="planetSearchContainer">
+        <input type="text" id="planetSearch" placeholder="Search Planet..." >
+        <div id="searchDropdown">
+            <!-- Dropdown options will be populated dynamically -->
+        </div>
+    </div>
+
+    <!-- Move timeScaleControl out of timeSearchControls -->
+    <div id="timeScaleControl">
+        <label id="timeLabel" for="timeScaleSlider" style="margin-right: 5px;">Time Scale:</label>
+        <input type="range" id="timeScaleSlider" min="-407" max="407" value="2" step="1">
+    </div>
+
+
+    
+    <div id="baseControls" ></div>
+        <!-- Throttle Indicator -->
+        <div id="throttleIndicator">
+            <label style="display: block; text-align: left; padding-left: 0px; padding-top: 5px; padding-bottom: 10px">Throttle</label>
+            <div style="display: flex; flex-direction: column; align-items: left; margin: 5px 0;">
+                <!-- Positive Throttle (Top) -->
+                <div id="positiveThrottleContainer" style="width: 20px; height: 150px; background: #333; position: relative; border-radius: 3px 3px 0 0;">
+                    <div id="positiveThrottleBar" style="width: 100%; height: 0%; background: #00FF00; border-radius: 3px 3px 0 0; position: absolute; bottom: 0; transition: height 0.1s;"></div>
+                    <!-- Positive Tick Marks -->
+                    <div style="position: absolute; bottom: 0%; left: 25px; width: 5px; height: 2px; background: #00FF00;"></div> <!-- 0 -->
+                    <div style="position: absolute; bottom: 25%; left: 25px; width: 5px; height: 2px; background: #00FF00;"></div> <!-- 50% -->
+                    <div style="position: absolute; bottom: 50%; left: 25px; width: 5px; height: 2px; background: #00FF00;"></div> <!-- 50% -->
+                    <div style="position: absolute; bottom: 75%; left: 25px; width: 5px; height: 2px; background: #00FF00;"></div> <!-- 50% -->
+                    <div style="position: absolute; bottom: 100%; left: 25px; width: 5px; height: 2px; background: #00FF00;"></div> <!-- Max -->
+                    <!-- Positive Labels -->
+                    <span style="position: absolute; top: 96%; left: 35px; font-size: 0.8rem;">0</span>
+                    <span style="position: absolute; bottom: 22%; left: 35px; font-size: 0.8rem;">25%</span>
+                    <span style="position: absolute; bottom: 47%; left: 35px; font-size: 0.8rem;">50%</span>
+                    <span style="position: absolute; bottom: 72%; left: 35px; font-size: 0.8rem;">75%</span>
+                    <span style="position: absolute; bottom: 96%; left: 35px; font-size: 0.8rem;">100%</span>
+                </div>
+                <!-- Negative Throttle (Bottom) -->
+                <div id="negativeThrottleContainer" style="width: 20px; height: 10px; background: #333; position: relative; border-radius: 0 0 3px 3px;">
+                    <div id="negativeThrottleBar" style="width: 100%; height: 0%; background: #FF0000; border-radius: 0 0 3px 3px; position: absolute; top: 0; transition: height 0.1s;"></div>
+                    
+                </div>
+            </div>
+            <span id="throttleValue" ></span>
+        </div>
+
+        
+
+    </div>
+
+
+
+    <!-- Focus Box -->
+<div id="focusBox">
+    <!-- <button id="trackPlanet" class="button">Track Planet</button> -->
+    <div class="focus-buttons"><span id="buttonToolTip" style="padding-bottom: 5px"><em>Button ToolTip Info</em></span></div>
+    <div class="focus-buttons">
+        <button id="infoOrbit" class="button-focus">ⓞ</button>
+        <button id="infoRotate" class="button-focus">ⓡ</button>
+        <button id="infoCelestialBody" class="button-focus">ⓘ</button>
+        <button id="infoAtmosphere" class="button-focus">ⓐ</button>
+        <button id="infoDescription" class="button-focus">ⓓ</button>
+        <button id="infoPhoto" class="button-focus">ⓟ</button>
+        <button id="toggleVectors" class="button-focus">ⓥ</button>
+        <button id="toggleUnits" class="button-focus">ⓤ</button>
+        <button id="clearPlanet" class="button-focus">ⓧ</button>
+    </div>
+
+    <div id="unitInfo" class="section">
+        <div class="section-header">
+            <span id="unitLabel" class="collapsible" style="padding-bottom: 5px"></span>
+            <button class="h-toggle-button">◀</button>
+        </div>
+    </div> 
+
+    <div id="planetInfo" class="section">
+        <div class="section-header">
+            <h4 id="planetName"></h4>
+            <button class="toggle-button">▲</button>
+        </div>
+        <div id="focusPlanetTableContainer" class="collapsible">
+            <table id="planetTable" class="collapsible"></table>
+        </div>
+    </div>
+    <div id="orbitalConstants" class="section">
+        
+        <div class="section-header">
+            <h4>Orbital Constants</h4>
+            <div class="section-spacer">
+            <button id="toggleEquatorialPlane" class="toggle-plane-button">E</button>
+            <button id="toggleOrbitalPlane" class="toggle-plane-button">O</button>
+            <button class="toggle-button">▲</button></div>
+        </div>
+        <div id="focusConstantsTableContainer" class="collapsible">
+            <table id="orbConstantsTable" class="collapsible"></table>
+        </div>
+    </div>
+    <div id="orbitalDynamics" class="section">
+        <div class="section-header">
+            <h4>Orbital Dynamics</h4>
+            <button class="toggle-button">▲</button>
+        </div>
+        <div id="focusDynamicsTableContainer" class="collapsible">
+            <table id="dynamicsTable" class="collapsible"></table>
+        </div>
+    </div>
+    <div id="rotationalConstants" class="section">
+        <div class="section-header">
+            <h4>Rotational Constants</h4>
+            <button class="toggle-button">▲</button>
+        </div>
+        <div id="focusRotationalTableContainer" class="collapsible">
+            <table id="rotationalTable" class="collapsible"></table>
+        </div>
+    </div>
+    <div id="scientificInfo" class="section">
+        <div class="section-header">
+            <h4>Scientific Info</h4>
+            <button class="toggle-button">▲</button>
+        </div>
+        <div id="focusScientificInfoTableContainer" class="collapsible">
+            <table id="scientificInfoTable" class="collapsible"></table>
+        </div>
+    </div>
+    <div id="atmosphereInfo" class="section">
+        <div class="section-header">
+            <h4>Atmosphere Composition</h4>
+            <button class="toggle-button">▲</button>
+        </div>
+        <div id="focusAtmosphereTableContainer" class="collapsible">
+            <table id="atmosphereInfoTable" class="collapsible"></table>
+        </div>
+    </div>
+    <div id="description" class="section" style="display: none;">
+        <div class="section-header">
+            <h4 style="margin-top:10px;">Description</h4>
+            <button class="toggle-button">▲</button>
+        </div>
+        <div id="descriptionContent" class="collapsible">
+            <p id="descriptionText"></p>
+        </div>
+    </div>
+    <div id="photos" class="section" style="display: none;">
+        <div class="section-header">
+            <h4 style="margin-top:10px;">Photographs</h4>
+            <button class="toggle-button">▲</button>
+        </div>
+        <div id="photoContent" class="collapsible">
+            <div id="photoContentDynamic">
+            
+            </div>
+        </div>
+    </div>
+    
+</div>
+
+    
+
+    <!-- Add this after #timeScaleControl -->
+    <div id="cameraPosition" style="position: absolute; bottom: 10px; right: 10px; color: white; background: rgba(0, 0, 0, 0.7); padding: 5px; border-radius: 3px;"></div>
+    <div id="hoverPopup"></div>
+
+    <!-- After the existing #helpPopup -->
+    <div id="simulationControlsPopup" class="popup" style="position: absolute; display: none; color: white; background: rgba(0, 0, 0, 0.8); padding: 10px; border-radius: 5px; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 550px; z-index: 20;">
+        <h3>Simulation Controls</h3>
+        <div id="simulationControlsButtons" style="margin-bottom: 10px;">
+            <button onclick="document.getElementById('simulationControlsPopup').style.display='none'" class="button">Close</button>
+        </div>
+        <table id="simulationControlsTable">
+            <thead>
+                <tr>
+                    <th>Action</th>
+                    <th>Control</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Start or stop the simulation</td>
+                    <td>Pause/Resume</td>
+                </tr>
+                <tr>
+                    <td>Increase simulation speed by 1 unit</td>
+                    <td>T +</td>
+                </tr>
+                <tr>
+                    <td>Decrease simulation speed by 1 unit</td>
+                    <td>T -</td>
+                </tr>
+                <tr>
+                    <td>Adjust simulation speed (-10 to +10 years/sec)</td>
+                    <td>Time Scale Slider</td>
+                </tr>
+                <tr>
+                    <td>Show/hide planet orbits (white)</td>
+                    <td>Toggle Planet Orbits</td>
+                </tr>
+                <tr>
+                    <td>Show/hide moon orbits (yellow)</td>
+                    <td>Toggle Moon Orbits</td>
+                </tr>
+                <tr>
+                    <td>Show/hide planet motion trails</td>
+                    <td>Toggle Planet Trails</td>
+                </tr>
+                <tr>
+                    <td>Show/hide moon motion trails</td>
+                    <td>Toggle Moon Trails</td>
+                </tr>
+                <tr>
+                    <td>Adjust scene brightness</td>
+                    <td>Increase/Decrease Ambient</td>
+                </tr>
+                <tr>
+                    <td>Increase/decrease planet sizes</td>
+                    <td>Scale Planets/Decrease Scale</td>
+                </tr>
+                <tr>
+                    <td>Reset to initial conditions</td>
+                    <td>Restart Simulation</td>
+                </tr>
+                <tr>
+                    <td>Cycle to Previous Celestial Body</td>
+                    <td>, Key</td>
+                </tr>
+                <tr>
+                    <td>Cycle to Next Celestial Body</td>
+                    <td>. Key</td>
+                </tr>
+                <tr>
+                    <td>Exit Focus Mode</td>
+                    <td>Escape Key</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div id="orbitalControlsPopup" class="popup" style="position: absolute; display: none; color: white; background: rgba(0, 0, 0, 0.8); padding: 10px; border-radius: 5px; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 550px; z-index: 20;">
+        <h3>Orbital Controls</h3>
+        <div id="orbitalControlsButtons" style="margin-bottom: 10px;">
+            <button onclick="document.getElementById('orbitalControlsPopup').style.display='none'" class="button">Close</button>
+        </div>
+        <table id="orbitalControlsTable">
+            <thead>
+                <tr>
+                    <th>Action</th>
+                    <th>Control</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Toggle between Orbital/Flight modes</td>
+                    <td>C Key</td>
+                </tr>
+                <tr>
+                    <td>Rotate camera around target</td>
+                    <td>Left-click + drag</td>
+                </tr>
+                <tr>
+                    <td>Pan camera</td>
+                    <td>Right-click + drag</td>
+                </tr>
+                <tr>
+                    <td>Zoom in/out</td>
+                    <td>Scroll wheel</td>
+                </tr>
+                <tr>
+                    <td>Focus on a planet</td>
+                    <td>Click Planet</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div id="flightControlsPopup" class="popup" style="position: absolute; display: none; color: white; background: rgba(0, 0, 0, 0.8); padding: 10px; border-radius: 5px; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 550px; z-index: 20;">
+        <h3>Flight Controls</h3>
+        <div id="flightControlsButtons" style="margin-bottom: 10px;">
+        <button onclick="document.getElementById('flightControlsPopup').style.display='none'" class="button">Close</button>
+        </div>
+        <table id="flightControlsTable">
+            <thead>
+                <tr>
+                    <th>Action</th>
+                    <th>Key</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Toggle between Orbital/Flight modes</td>
+                    <td>C Key</td>
+                </tr>
+                <tr>
+                    <td>Pitch Up/Down + Yaw Left/Right</td>
+                    <td>Mouse Down + Move</td>
+                </tr>
+                <tr>
+                    <td>Pitch Down</td>
+                    <td>↑ Key</td>
+                </tr>
+                <tr>
+                    <td>Pitch Up</td>
+                    <td>↓ Key</td>
+                </tr>
+                <tr>
+                    <td>Yaw Left</td>
+                    <td>← Key</td>
+                </tr>
+                <tr>
+                    <td tyle="padding: 5px; border-right: 1px solid white;">Yaw Right</td>
+                    <td>→ Key</td>
+                </tr>
+                <tr>
+                    <td>Roll Left</td>
+                    <td>A Key</td>
+                </tr>
+                <tr>
+                    <td>Roll Right</td>
+                    <td>Z Key</td>
+                </tr>
+                <tr>
+                    <td>Increase Throttle by 25%</td>
+                    <td>] Key</td>
+                </tr>
+                <tr>
+                    <td>Decrease Throttle by 25%</td>
+                    <td>[ Key</td>
+                </tr>
+                <tr>
+                    <td>Increase Throttle by 5 units</td>
+                    <td>+ Key</td>
+                </tr>
+                <tr>
+                    <td>Decrease Throttle by 5 units</td>
+                    <td>- Key</td>
+                </tr>
+                <tr>
+                    <td>Increase Throttle by 1 unit</td>
+                    <td>SHIFT +</td>
+                </tr>
+                <tr>
+                    <td>Decrease Throttle by 1 unit</td>
+                    <td>SHIFT -</td>
+                </tr>
+                <tr>
+                    <td>Max Throttle</td>
+                    <td>ENTER</td>
+                </tr>
+                <tr>
+                    <td>Zero Throttle</td>
+                    <td>BACKSPACE</td>
+                </tr>
+                <tr>
+                    <td>Throttle Indicator</td>
+                    <td>Shows current speed</td>
+                </tr>
+                <tr>
+                    <td>Crosshair</td>
+                    <td>Center screen reference point</td>
+                </tr>
+                <tr>
+                    <td>Cycle to Previous Celestial Body</td>
+                    <td>, Key</td>
+                </tr>
+                <tr>
+                    <td>Cycle to Next Celestial Body</td>
+                    <td>. Key</td>
+                </tr>
+                <tr>
+                    <td>Exit Focus Mode</td>
+                    <td>Escape Key</td>
+                </tr>
+                <tr>
+                    <td>Focus on Celestial Body in Crosshairs</td>
+                    <td>T Key</td>
+                </tr>
+            </tbody>
+        </table>
+        
+    </div>
+
+   
+
+    <div id="settingsPopup" class="popup">
+        <div style="margin-top: 20px;">
+            <button id="applySettings" class="button">Apply</button>
+            <button id="cancelSettings" class="button">Cancel</button>
+        </div>
+        <h3>Render Settings [saved via cookies]</h3>
+        
+        <div id="settingsContent">
+            <!-- Settings will be populated dynamically via JavaScript -->
+        </div>
+        
+    </div>
+
+    <!-- Add Acknowledgements Popup at the bottom of the body, before  -->
+    <div id="acknowledgementsPopup" class="popup" style="position: absolute; display: none; color: white; background: rgba(0, 0, 0, 0.8); padding: 20px; border-radius: 5px; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 500px; max-height: 80vh; z-index: 20;">
+        <h3>Acknowledgements</h3>
+        <button id="closeAcknowledgements" class="button">Close</button>
+        <div id="acknowledgementsContent" style="margin-top: 10px;">
+            <ul>
+                <li><strong>NCSU</strong> - North Carolina State University College of Mechanical and Aerospace Engineering.</li>
+                <li><strong>Orbital Mechanics for Engineering Students 3rd Edition</strong> - Howard D. Curtis.</li>
+                <li><strong>NASA</strong> - National Aeronautics and Space Administration, for planetary data, imagery, and scientific insights.</li>
+                <li><strong>JPL</strong> - Jet Propulsion Laboratory, for precise orbital elements and physical constants.</li>
+                <li><strong>Three.js Community</strong> - For the 3D rendering library that powers this simulation.</li>
+                <li><strong>Solar System Scope</strong> - <a href="https://www.solarsystemscope.com" target="_blank">https://www.solarsystemscope.com</a> for textures used on planets.</li>
+                <li><strong>NASA Blue Marble Collection</strong> - <a href="https://visibleearth.nasa.gov/collection/1484/blue-marble" target="_blank">https://visibleearth.nasa.gov/collection/1484/blue-marble</a> for textures used on planets.</li>
+                <li><strong>Celestia Motherlode</strong> - <a href="http://www.celestiamotherlode.net/" target="_blank">http://www.celestiamotherlode.net/</a> for textures used on planets.</li>
+                <li><strong>3D Textures from Various Artists</strong> - Runar Thorvaldsen, John van Vliet, maxim, Mattias Malmer, emazarico, Hermes, FarGetaNik, ngx</li>
+            </ul>
+            <p>We express our gratitude to these organizations, individuals, and authors for their publicly available resources that made this project possible.</p>
+        </div>
+    </div>
+
+    <!-- Add About Popup at the bottom of the body, before  -->
+    <div id="aboutPopup" class="popup" style="position: absolute; display: none; color: white; background: rgba(0, 0, 0, 0.8); padding: 20px; border-radius: 5px; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 500px; max-height: 80vh; z-index: 20;">
+        <h3>planetarium.Earth</h3>
+        <p> v0.9.3 (beta)</p>
+        <button id="closeAbout" class="button">Close</button>
+        <div id="aboutContent" style="margin-top: 10px;">
+            <p><strong>Author:</strong> Jon Kakaley</p>
+            <p><strong>X Handle:</strong> <a href="https://x.com/JonKakaley" target="_blank">@JonKakaley</a></p>
+            <p><strong>Support:</strong> This tool will always be available for free, however, if you like it and wish to support the hosting costs and developement effort - please consider subscribing to my handle on X.</p>
+            <p><strong>Purpose:</strong> This simulation was created to visualize and explore the dynamics of our solar system. It aims to provide an interactive educational tool for enthusiasts, students, and researchers to understand celestial mechanics, planetary characteristics, and orbital behavior in a 3D environment. Built with Three.js, it combines real scientific data with an intuitive interface to foster curiosity and learning about space. It uses the two body assumption to simulate planetary motion in real-time.</p>
+            <p><strong>Requirements:</strong> Any modern web browser compatible with WebGL (EDGE recommended, Safari, Firefox & Chrome also tested). Faster CPUs/GPUs will enable rendering at higher settings. The developement was tested on a MacBook Pro, Intel Core i9, 16GB RAM, and RADEON 5500M GPU.</p>
+            <p><strong>Future Features:</strong> Visualization of Hohmann Transfer Orbits, N-body Dynamics, additional solar systems / galaxies, LLM integration for 1-click real time news on celestial bodies.</p>
+            <p> If you have feedback or would like to request a feature please feel free to engage me on X.</p>
+        </div>
+    </div>
+
+    <!-- New Getting Started Popup -->
+    <div id="gettingStartedPopup" class="popup" >
+        <h3>Getting Started with planaterium.Earth</h3>
+        Choose 3D Settings:
+        <div style="margin-top: 20px;">
+            <button id="recommendedSettingsButton" class="button">Recommended</button>
+            <button id="currentSettingsButton" class="button">Keep Current Settings</button>
+            <button id="safeModeButton" class="button">Safe Mode</button>
+        </div>
+        <p>[Simulation settings are saved via cookies. Clearing cookies will always bring back the 'Getting Started' page.]</p>
+        <div style="margin-top: 10px;">
+            <label style="font-family: 'Roboto', sans-serif; font-size: 1rem;">
+                <input type="checkbox" id="dontShowAgain"> Do not show 'Getting Started' in the future
+            </label>            
+        </div>
+        <div id="slideNav" style="text-align: center; margin: 10px 0;">
+            <span class="slide-dot active"></span>
+            <span class="slide-dot"></span>
+            <span class="slide-dot"></span>
+            <span class="slide-dot"></span>
+        </div>
+        <div id="gettingStartedSlides" class="slide-container">
+            <div class="slide" style="display: none;">
+                <h4>Interact with Planets</h4>
+                <p>Click on any planet or moon to focus on it and view detailed information, or use the <strong>search bar</strong> at the top to quickly find celestial bodies by name.</p>
+                <img src="./getting_started/click_search_planets.png" alt="Planet Selection Example" style=" max-height: 350px; border-radius: 3px; margin-top: 10px;">
+            </div>
+            <div class="slide" style="display: block;">
+                <h4>Navigate the Solar System</h4>
+                <p>Use your mouse to explore: <strong>Left-click and drag</strong> to rotate around celestial bodies, <strong>right-click and drag</strong> to pan, and <strong>scroll</strong> to zoom in or out. Switch to flight mode with the 'C' key for a first-person experience.</p>
+                <video controls style="width: 100%; max-height: 300px; border-radius: 3px; margin-top: 10px;">
+                    <source src="./getting_started/mouse_controls.mov" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+            <div class="slide" style="display: none;">
+                <h4>Control Time</h4>
+                <p>Adjust the <strong>Time Scale slider</strong> at the top to speed up or slow down the passage of time, allowing you to observe planetary orbits over days, months, or years.</p>
+                <video controls style="width: 100%; max-height: 350px; border-radius: 3px; margin-top: 10px;">
+                    <source src="./getting_started/adjust_time.mov" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+            <div class="slide" style="display: none;">
+                <h4>Customize Your Experience</h4>
+                <p>Visit the <strong>Render Settings</strong> in the Video menu to optimize performance and visuals. Adjust texture quality, shaders, and more to suit your device.</p>
+                <img src="./getting_started/render_settings.png" alt="Render Settings Example" style=" max-height: 350px; border-radius: 3px; margin-top: 10px;">
+            </div>
+        </div>
+        
+        
+        
+        
+        
+    </div>
+
+    <!-- Loading Progress Popup -->
+    <div id="loadingPopup" class="popup" >
+        <div style="display: flex;justify-content: space-between;align-items: center; margin-bottom: 10px;"><h3 style="margin: 0 0 10px 0;">Loading Textures</h3><button id="hideLoadingPopup" class="button">Hide</button></div>
+        <div id="progressBarContainer" style="width: 100%; background: #333; height: 20px; border-radius: 3px; margin-bottom: 10px;">
+            <div id="progressBar" style="width: 0%; height: 100%; background: #FFFFFF; border-radius: 3px; transition: width 0.3s;"></div>
+        </div>
+        <div id="loadingLog" style="max-height: 200px; overflow-y: auto; font-size: 0.9rem; line-height: 1.4; border: 1px solid #FFFFFF; padding: 5px; border-radius: 3px;"></div>
+    </div>
+
+    <div id="directionalArrow" style="display: none; position: absolute; width: 20px; height: 20px; background: transparent; pointer-events: none; z-index: 10;">
+        <svg width="20" height="20" viewBox="0 0 20 20">
+            <polygon points="10,0 5,15 15,15" fill="green" />
+        </svg>
+    </div>
+
+    <!-- Add MathJax for fancy math notation -->
+    <!--<script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>-->
+    <script id="MathJax-script" async src="./js/tex-mml-chtml.js"></script>
+    <script src="./js/three.min.js"></script>
+    <script src="./js/OrbitControls.js"></script>
+    <script src="./js/OBJLoader.js"></script>
+    <script src="./js/MTLLoader.js"></script>
+    <script src="./js/DDSLoader.js"></script>
+    <script src="./js/GLTFLoader.js"></script>
+    <script src="./js/DRACOLoader.js"></script>
+    <script src="./js/TieFighterControls.js"></script>
+    <script src="./js/PointerLockControls.js"></script>
+    <script src="solar_constants.js"></script>
+    <script src="solar_descriptions.js"></script>
+    <script src="solar_image_list.js"></script>
+    <script src="./solar_science_info.js"></script>
+    
+    <script src="./js/crosshair.js"></script>
+    <script src="./shaders.js"></script>
+    <script src="solar_system.js"></script>
+    <!--<script src="solar_system_populate_track.js"></script>-->
+</body>
+</html>

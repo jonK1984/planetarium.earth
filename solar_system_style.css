@@ -1,0 +1,1412 @@
+body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; background: rgba(0, 0, 0, 1);}
+
+table { color: white; border-collapse: collapse; width: 100%; margin-bottom: 10px; }
+td { border: 1px solid white; padding: 5px; text-align: left; }
+tr { line-height: 25px; }
+h4 { margin: 10px 0 5px 0; }
+.collapsible { display: table; }
+.section, .collapsible {
+    pointer-events: auto; /* Ensure children receive events */
+}
+
+#canvas { width: 100%; height: 100vh; }
+#dateTimeLabel {
+    position: absolute; top: 35px; right: 10px; color: white;
+    background: rgba(0, 0, 0, 0.7); padding: 5px; border-radius: 3px;
+}
+#timeRateLabel {
+    position: absolute; 
+    top: 10px; 
+    right: 10px; 
+    color: white; 
+    background: rgba(0, 0, 0, 0.7); 
+    padding: 5px; 
+    border-radius: 3px;
+}
+#fpsCounter
+{
+    position: absolute; 
+    top: 60px; 
+    right: 10px; 
+    color: white; 
+    background: rgba(0, 0, 0, 0.7); 
+    padding: 5px; 
+    border-radius: 3px; 
+    display: none;
+}
+
+/* Unified Button Style */
+.button {
+    padding: 8px 16px; /* Larger size */
+    background: #000000; /* Matches menu background */
+    color: #FFFFFF; /* White text */
+    border: 1px solid #FFFFFF; /* Outline matches text color */
+    border-radius: 3px;
+    font-family: 'Roboto', sans-serif; /* Matches hamburger menu */
+    font-size: 1rem; /* Consistent with menu */
+    transition: background 0.2s, color 0.2s; /* Smooth hover effect */
+    cursor: pointer;
+}
+.button:hover {
+    background: #1A1A1A; /* Slightly lighter background on hover */
+    color: #FFFFFF; /* Brighter white on hover */
+}
+
+/* Specific styling for pauseResume to fix size */
+#pauseResume {
+    width: 40px; /* Fixed width to accommodate both icons */
+    height: 37px; /* Fixed width to accommodate both icons */
+    min-height: 37px; /* Ensure it doesn’t shrink */
+    min-width: 50px; /* Ensure it doesn’t shrink */
+    display: flex; /* Use flexbox to center the icon */
+    justify-content: center; /* Horizontally center */
+    align-items: center; /* Vertically center */
+    padding: 8px 0; /* Consistent vertical padding, no horizontal padding needed */
+    font-size: 1.2rem; /* Slightly larger icon for visibility */
+}
+
+
+
+.button-focus {
+    padding: 4px 8px; /* Larger size */
+    background: #000000; /* Matches menu background */
+    color: #FFFFFF; /* White text */
+    border: 1px solid #FFFFFF; /* Outline matches text color */
+    border-radius: 4px;
+    font-family: 'Roboto', sans-serif; /* Matches hamburger menu */
+    font-size: 1rem; /* Consistent with menu */
+    transition: background 0.2s, color 0.2s; /* Smooth hover effect */
+    cursor: pointer;
+}
+.button-focus:hover {
+    background: #1A1A1A; /* Slightly lighter background on hover */
+    color: #FFFFFF; /* Brighter white on hover */
+}
+
+#baseControls {
+    position: absolute; bottom: 10px; left: 10px;
+}
+.focus-buttons {
+    display: flex; /* Horizontal layout for buttons */
+    justify-content: flex-start; /* Spread buttons, pushing clearPlanet to the right */
+    align-self: flex-start;
+}
+
+#clearPlanet {
+    align-self: flex-end; /* Align only this button to the right */
+}
+
+/* Hamburger Menu Container */
+#menuContainer {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 10;
+}
+
+/* Hamburger Icon */
+.hamburger {
+    font-size: 16px; /* Larger symbol (was 24px) */
+    /*padding: 8px 16px;*/ /* Matches .button size */
+    background: #000000; /* Matches menu background (was #121212) */
+    color: #FFFFFF;
+    border: 1px solid #FFFFFF; /* Outline */
+    border-radius: 3px;
+    font-family: 'Roboto', sans-serif;
+    transition: background 0.2s, color 0.2s;
+    cursor: pointer;
+    max-height: 37px;
+}
+.hamburger:hover {
+    background: #1A1A1A;
+    color: #FFFFFF;
+}
+
+/* Menu Dropdown */
+.menu {
+    display: none;
+    position: absolute;
+    top: 38px; /* Moved down to avoid overlap (was 40px) */
+    left: 0;
+    background: #000000;
+    padding: 10px;
+    border-radius: 5px;
+    flex-direction: column;
+    width: 200px;
+}
+.menu.active {
+    display: flex;
+}
+
+/* Menu Items (using .button class) */
+.menu button {
+    margin: 5px 0;
+    width: 100%;
+    text-align: left;
+}
+
+/* Submenu Container */
+.submenu-container {
+    position: relative;
+    width: 100%;
+}
+
+/* Unified styling for all submenu toggle buttons */
+#videoSubmenuToggle, #simulationSubmenuToggle, #physicsMenuToggle, #trackSubmenuToggle, #helpSubmenuToggle, .submenu-toggle {
+    position: relative;
+    padding-right: 25px; /* Space for arrow */
+}
+#videoSubmenuToggle::after, #simulationSubmenuToggle::after, #physicsMenuToggle::after, #trackSubmenuToggle::after, #helpSubmenuToggle::after, .submenu-toggle::after {
+    content: '\25B6'; /* Right arrow (▶) */
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+#videoSubmenuToggle:hover::after, #simulationSubmenuToggle:hover::after, #physicsMenuToggle:hover::after, #trackSubmenuToggle:hover::after, #helpSubmenuToggle:hover::after, .submenu-toggle:hover::after {
+    opacity: 1;
+}
+
+/* Submenu Styles */
+.submenu {
+    display: none;
+    position: absolute;
+    left: 100%;
+    top: 0;
+    background: #000000;
+    padding: 5px;
+    border-radius: 5px;
+    flex-direction: column;
+    width: 245px;
+}
+.submenu.active {
+    display: flex;
+}
+.submenu-container:hover .submenu {
+    display: flex;
+}
+
+/* Submenu Buttons (using .button class) */
+.submenu button {
+    margin: 3px 0;
+}
+
+
+
+#descriptionContent {
+    display: block;
+    /*height: 780px;*/
+    overflow-y: scroll;
+    /*margin-right: 20px;*/
+    padding-right: 10px;
+    /*scrollbar-width: 3px;*/
+}
+
+
+/* Existing focusBox styles */
+#focusBox {
+    position: absolute;
+    top: 70px;
+    left: 10px;
+    color: white;
+    background: rgba(0, 0, 0, 0.8);
+    padding: 10px;
+    border-radius: 5px;
+    display: none;
+    max-width: 300px;
+    max-height: 820px;
+    z-index: 9;
+    transition: max-width 0.3s ease;
+    
+    
+}
+
+#focusBox td {
+    transition: display 0s;
+}
+
+
+/* New styles for sections */
+.section {
+    margin-bottom: 10px;
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+            
+
+.section-header span, .section-header h4 {
+    margin: 0;
+}
+
+
+            
+
+.toggle-button {
+    
+    background: none; 
+    border: solid; 
+    color: white; 
+    cursor: pointer; 
+    font-size: 16px; 
+    padding: 0; 
+    width: 20px; 
+    height: 20px; 
+    text-align: center; 
+    pointer-events: auto;
+}
+
+.toggle-button:focus {
+    outline: none;
+}
+
+.toggle-button:hover {
+    background: #1A1A1A; /* Slightly lighter background on hover */
+    color: #FFFFFF; /* Brighter white on hover */
+}
+
+.h-toggle-button {
+    
+    background: none; 
+    border: solid; 
+    color: white; 
+    cursor: pointer; 
+    font-size: 16px; 
+    padding: 0; 
+    width: 25px; 
+    height: 25px; 
+    text-align: center; 
+    vertical-align: middle;
+    pointer-events: auto;
+}
+
+.h-toggle-button:focus {
+    outline: none;
+}
+
+.h-toggle-button:hover {
+    background: #1A1A1A; /* Slightly lighter background on hover */
+    color: #FFFFFF; /* Brighter white on hover */
+}
+
+.collapsible {
+    color: white;
+    border-collapse: collapse;
+    width: 100%;
+    max-height: 600px; /* Expanded height; adjust if needed */
+    overflow: hidden;
+    transition: max-height 0.8s ease;
+    
+}
+
+.collapsible.collapsed {
+    max-height: 0;
+}
+
+.collapsible td {
+    border: 1px solid white;
+    padding: 5px;
+    text-align: left;
+}
+
+.collapsible tr {
+    line-height: 25px;
+}
+
+.toggle-plane-button {
+    background: none;
+    border: solid;
+    color: white;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 0;
+    width: 20px;
+    height: 20px;
+    text-align: center;
+    pointer-events: auto;
+    
+}
+
+
+
+/* Specific positioning for toggleEquatorialPlane and toggleOrbitalPlane */
+.section-spacer {
+    justify-content: flex-end;
+}
+
+.toggle-plane-button:focus {
+    outline: none;
+}
+
+.toggle-plane-button:hover {
+    background: #1A1A1A;
+    color: #FFFFFF;
+}
+
+.focusTable td {
+    border: 1px solid white;
+    padding: 5px;
+    text-align: left;
+}
+
+.focusTable {
+    color: white;
+    width: 100%;
+    max-height: 600px; /* Expanded height; adjust if needed */
+    overflow: hidden;
+}
+
+.focusTable tr {
+    line-height: 25px;
+}
+
+
+#unitLabel {
+    display: block;
+    margin-top: 10px;
+}
+
+/* Main Controls */
+#mainControls {
+    position: absolute;
+    left: 70px;
+    top: 10px;
+    display: flex; /* Use Flexbox for horizontal alignment */
+    align-items: center; /* Vertically center all children */
+    gap: 10px; /* Consistent spacing between elements */
+}
+
+#mainControls button {
+    margin-right: 0px;
+}
+
+/* Time Scale Control  position: absolute; left: 280px;*/
+#timeSearchControls {
+    position: absolute;
+    top: 10px;
+    left: 280px; /* Adjust to place it right of #mainControls */
+    display: flex;
+    gap: 5px;
+    z-index: 5; /* Ensure it’s above the canvas but below popups */
+}
+
+#timeScaleControl {
+    position: absolute;
+    top: 17px;
+    left: 435px; /* Original position from #timeSearchControls */
+    display: flex;
+    gap: 5px;
+    z-index: 5; /* Same z-index as before */
+    vertical-align: middle;
+}
+
+#timeScaleControl label {
+    margin-right: 5px;
+    color: #FFFFFF;
+    font-family: 'Roboto', sans-serif;
+    font-size: 1rem;
+    display: inline-flex; 
+    align-items: center; 
+    margin-left: 10px;
+    
+}
+
+#timeScaleSlider {
+    width: 550px;
+    vertical-align: middle;
+    background: transparent; /* Ensure background is controlled */
+    -webkit-appearance: none; /* Remove default Safari styling */
+}
+
+/* Style the track */
+#timeScaleSlider::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 8px; /* Adjust height as needed */
+    background: #333; /* Match your design */
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+#timeScaleSlider::-moz-range-track {
+    width: 100%;
+    height: 8px;
+    background: #333;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+#timeScaleSlider::-ms-track {
+    width: 100%;
+    height: 8px;
+    background: #333;
+    border-radius: 3px;
+    cursor: pointer;
+    color: transparent; /* Hide default fill in IE/Edge */
+}
+
+/* Style the thumb */
+#timeScaleSlider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px; /* Default size for desktop */
+    height: 20px;
+    background: #FFFFFF;
+    border-radius: 50%;
+    cursor: pointer;
+    margin-top: -6px; /* Center thumb on track (half of thumb height - track height) */
+}
+
+#timeScaleSlider::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    background: #FFFFFF;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none; /* Remove default border in Firefox */
+}
+
+#timeScaleSlider::-ms-thumb {
+    width: 20px;
+    height: 20px;
+    background: #FFFFFF;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+/* Focus state for accessibility */
+#timeScaleSlider:focus::-webkit-slider-thumb {
+    box-shadow: 0 0 5px rgba(255, 255, 255, 0.8);
+}
+
+#timeScaleSlider:focus::-moz-range-thumb {
+    box-shadow: 0 0 5px rgba(255, 255, 255, 0.8);
+}
+
+#timeScaleSlider:focus::-ms-thumb {
+    box-shadow: 0 0 5px rgba(255, 255, 255, 0.8);
+}
+
+/* Planet Search Bar */
+#planetSearchContainer {
+    position: absolute;
+    top: 10px; /* Keep it at the top like #timeSearchControls */
+    left: 250px;  /*Adjust left position to follow timeScaleControl */
+    display: inline-flex;
+    align-items: center;
+    margin-left: 10px;
+}
+
+#planetSearch {
+    padding: 8px;
+    width: 150px;
+    border-radius: 3px;
+    border: 1px solid #FFFFFF;
+    background: #000000;
+    color: #FFFFFF;
+    font-family: 'Roboto', sans-serif;
+    font-size: 1rem;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+#planetSearch:focus {
+    border-color: #1A1A1A;
+}
+
+#searchDropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 150px;
+    background: #000000;
+    border: 1px solid #FFFFFF;
+    border-radius: 3px;
+    max-height: 200px;
+    overflow-y: auto;
+    display: none;
+    z-index: 15;
+}
+
+#searchDropdown div {
+    padding: 5px 10px;
+    color: #FFFFFF;
+    cursor: pointer;
+    font-family: 'Roboto', sans-serif;
+    font-size: 1rem;
+}
+
+#searchDropdown div:hover {
+    background: #1A1A1A;
+}
+
+#hoverPopup {
+    position: absolute; display: none; color: white;
+    background: rgba(0, 0, 0, 0.8); padding: 10px; border-radius: 5px;
+    /*pointer-events: none;*/
+}
+#helpPopup {
+    position: absolute; display: none; color: white;
+    background: rgba(0, 0, 0, 0.8); padding: 10px; border-radius: 5px;
+    top: 50%; left: 50%; transform: translate(-50%, -50%);
+    max-width: 400px;
+}
+#aboutPopup {
+    border: 1px solid white;
+}
+
+/* Existing #acknowledgementsPopup styles */
+
+#acknowledgementsPopup {
+    position: absolute;
+    display: none;
+    color: white;
+    background: rgba(0, 0, 0, 0.8);
+    padding: 20px;
+    border-radius: 5px;
+    border: 1px solid white;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 500px;
+    max-height: 80vh;
+    z-index: 20;
+}
+
+/* Add this new rule to space out bullet points */
+#acknowledgementsContent ul li {
+    margin-bottom: 10px; /* Increase spacing between bullet points */
+}
+
+#cameraPosition {
+    max-width: 300px;
+    white-space: pre-wrap;
+}
+
+
+/* Popup General Styling */
+.popup {
+    display: flex;
+    flex-direction: column;
+    
+}
+
+
+/* Header Styling */
+#constantsHeader {
+    flex-shrink: 0;
+}
+
+/* Buttons Container */
+#constantsButtons {
+    display: flex;
+    justify-content: flex-start;
+}
+
+/* Scrollable Container */
+#constantsSubContainer {
+    overflow-y: scroll;
+    height: calc(80vh - 100px);
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: auto;
+    scrollbar-color: #888 #333;
+    margin-top: 0;
+    padding-top: 0;
+}
+#constantsSubContainer::-webkit-scrollbar {
+    width: 14px;
+}
+#constantsSubContainer::-webkit-scrollbar-track {
+    background: #333;
+}
+#constantsSubContainer::-webkit-scrollbar-thumb {
+    background: #888;
+}
+#constantsSubContainer::-webkit-scrollbar-thumb:hover {
+    background: #aaa;
+}
+
+/* Table Styling */
+#constantsTable #flightControlsTable{
+    color: white;
+    border-collapse: collapse;
+    width: 100%;
+    table-layout: fixed;
+}
+#constantsTable th, #constantsTable td, #flightControlsTable th, #flightControlsTable td, #orbitalControlsTable th, #orbitalControlsTable td, #simulationControlsTable th, #simulationControlsTable td{
+    border: 1px solid white;
+    padding: 5px;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+#constantsTable th, #flightControlsTable th, #orbitalControlsTable th, #simulationControlsTable th {
+    background: rgb(255, 255, 255);
+    color: black;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    margin: 0;
+    padding-top: 5px;
+    padding-bottom: 5px;
+}
+#constantsTable th:nth-child(1), #constantsTable td:nth-child(1) { width: 15%; }
+#constantsTable th:nth-child(2), #constantsTable td:nth-child(2) { width: 10%; }
+#constantsTable th:nth-child(3), #constantsTable td:nth-child(3) { width: 20%; }
+#constantsTable th:nth-child(4), #constantsTable td:nth-child(4) { width: 20%; }
+#constantsTable th:nth-child(5), #constantsTable td:nth-child(5) { width: 7%; }
+#constantsTable th:nth-child(6), #constantsTable td:nth-child(6) { width: 7%; }
+#constantsTable th:nth-child(7), #constantsTable td:nth-child(7) { width: 7%; }
+#constantsTable th:nth-child(8), #constantsTable td:nth-child(8) { width: 7%; }
+#constantsTable th:nth-child(9), #constantsTable td:nth-child(9) { width: 7%; }
+
+#constantsTableContainer {
+    max-height: calc(80vh - 100px);
+    overflow-y: scroll;
+    -webkit-overflow-scrolling: touch;
+}
+
+.popup table {
+    color: white;
+    border-collapse: collapse;
+    width: 100%;
+}
+.popup th, .popup td {
+    border: 1px solid white;
+    padding: 5px;
+    text-align: left;
+}
+.popup th {
+    background: rgba(255, 255, 255, 0.1);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+/* Popup Buttons */
+.popup button {
+    margin-right: 10px; /* Spacing between buttons */
+}
+
+#gettingStartedPopup {
+    position: absolute; 
+    display: none; 
+    color: white; 
+    background: rgba(0, 0, 0, 0.8); 
+    padding: 20px; 
+    border-radius: 5px; 
+    top: 50%; 
+    left: 50%; 
+    transform: translate(-50%, -50%); 
+    max-width: 500px; 
+    max-height: 80vh; 
+    z-index: 20; 
+    border: 1px solid white;
+    overflow: hidden;
+}
+
+/* Slide Container */
+.slide-container {
+    width: 100%;
+    height: 400px; /* Adjust based on content */
+    position: relative;
+    overflow: hidden;
+}
+
+.slide {
+    width: 100%;
+    height: 100%;
+    position: absolute;
+    top: 0;
+    left: 0;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+    margin: 0 auto; /* Centers horizontally */
+}
+
+
+
+.slide[style*="display: block"] {
+    opacity: 1;
+}
+
+/* Navigation Dots */
+.slide-dot {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    background: #FFFFFF;
+    border-radius: 50%;
+    margin: 0 5px;
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity 0.3s ease;
+}
+
+.slide-dot.active {
+    opacity: 1;
+}
+
+.slide-dot:hover {
+    opacity: 0.8;
+}
+
+
+/* Equations Content */
+#equationsContent {
+    font-size: 1.0rem;
+    line-height: 1.4;
+}
+
+/* Loading Popup Specific Styles */
+#loadingPopup {
+    display: none; /* Initially invisible */
+    position: absolute; 
+    color: white; 
+    background: rgba(0, 0, 0, 0.8); 
+    padding: 20px; border-radius: 5px; 
+    top: 50%; left: 50%; transform: translate(-50%, -50%); 
+    max-width: 400px; max-height: 500px; 
+    min-width: 400px; min-height: 500px;
+    z-index: 30; 
+}
+
+/* Progress Bar */
+#progressBarContainer {
+    width: 100%;
+    background: #333; /* Dark gray background */
+    height: 20px;
+    border-radius: 3px;
+    margin-bottom: 10px;
+}
+#progressBar {
+    width: 0%;
+    height: 100%;
+    background: #FFFFFF; /* White fill, matches text color */
+    border-radius: 3px;
+    transition: width 0.3s ease; /* Smooth width transition */
+}
+
+/* Loading Log */
+#loadingLog {
+    max-height: 200px;
+    overflow-y: auto;
+    font-size: 0.9rem;
+    line-height: 1.4;
+    border: 1px solid #FFFFFF; /* White border */
+    padding: 5px;
+    border-radius: 3px;
+    color: #FFFFFF; /* White text */
+    background: rgba(0, 0, 0, 0.9); /* Slightly darker background */
+    flex-wrap: wrap;
+}
+#loadingLog::-webkit-scrollbar {
+    width: 10px;
+}
+#loadingLog::-webkit-scrollbar-track {
+    background: #333;
+}
+#loadingLog::-webkit-scrollbar-thumb {
+    background: #888;
+}
+#loadingLog::-webkit-scrollbar-thumb:hover {
+    background: #aaa;
+}
+
+.settings-group {
+    display: flex;
+    gap: 5px;
+    margin-top: 5px;
+}
+
+/* Replace existing .settings-button styles */
+.settings-button {
+    padding: 8px 16px; /* Matches .button */
+    background: #000000; /* Matches menu background */
+    color: #FFFFFF; /* White text */
+    border: 1px solid #FFFFFF; /* Outline matches text color */
+    border-radius: 3px;
+    font-family: 'Roboto', sans-serif; /* Matches hamburger menu */
+    font-size: 1rem; /* Consistent with menu */
+    transition: background 0.2s, color 0.2s; /* Smooth hover effect */
+    cursor: pointer;
+}
+
+.settings-button:hover {
+    background: #1A1A1A; /* Slightly lighter background on hover */
+    color: #FFFFFF; /* Brighter white on hover */
+}
+
+.settings-button.selected {
+    background: #555; /* Retain distinct selected state */
+    font-weight: bold; /* Retain bold text for selected */
+}
+
+#settingsPopup {
+    position: absolute;
+    display: none;
+    color: white;
+    background: rgba(0, 0, 0, 0.8);
+    padding: 20px;
+    border-radius: 5px;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 600px; /* Increased from 400px */
+    max-height: 80vh;
+    z-index: 20;
+    border: 1px solid white;
+}
+
+/* Add spacing between settings groups and style labels */
+#settingsContent > div {
+    margin-bottom: 15px; /* Space between each label-button group */
+}
+
+#settingsContent label {
+    font-family: 'Roboto', sans-serif; /* Match button font */
+    font-size: 1rem; /* Consistent with buttons */
+    color: #FFFFFF; /* White to match UI */
+    display: block; /* Ensure it takes its own line */
+    margin-bottom: 5px; /* Small space between label and buttons */
+}
+
+/* Remove margin from the last group to avoid extra space before buttons */
+#settingsContent > div:last-child {
+    margin-bottom: 0;
+}
+
+#throttleIndicator {
+    pointer-events: none; /* Prevents interference with slider */
+    border: 1px solid #00FF00;
+    position: absolute; bottom: 20px; width: 110px; left: 10px; color: #00FF00; background: rgba(0, 0, 0, 0.0); padding-left: 10px; border-radius: 3px; display: none;
+}
+
+#positiveThrottleContainer, #negativeThrottleContainer {
+    width: 20px;
+    height: 200px;
+    background: #333;
+    position: relative;
+    border-radius: 3px;
+    
+}
+
+#positiveThrottleBar {
+    width: 100%;
+    height: 0%;
+    background: #00FF00; /* White for positive */
+    border-radius: 3px;
+    position: absolute;
+    bottom: 0;
+    transition: height 0.1s ease;
+    
+}
+
+#negativeThrottleBar {
+    width: 100%;
+    height: 0%;
+    background: #00FF00; /* White by default */
+    border-radius: 3px;
+    position: absolute;
+    top: 0;
+    transition: height 0.1s ease;
+}
+
+#negativeThrottleBar.active {
+    background: #FF0000; /* Red when throttle is negative */
+}
+
+#throttleIndicator span {
+    font-family: 'Roboto', sans-serif;
+    color: #00FF00;
+}
+
+#throttleValue {
+    display: block;
+    text-align: left;
+    margin-top: 5px;
+    margin-left: 5px;
+    line-height: 1.2; /* Adjust line height for readability */
+    white-space: nowrap; /* Prevent wrapping within each line */
+}
+
+#fpsCounter {
+    font-family: 'Roboto', sans-serif;
+    font-size: 1rem;
+}
+
+/* Add to solar_system_style.css */
+
+/* Ensure photoContent is scrollable if needed */
+#photoContent {
+     /* Adjust based on your focusBox height */
+    overflow-y: auto;
+    padding: 10px;
+    display: block;
+    scroll-behavior: smooth;
+    overflow: scroll;
+    margin-right: 20px;
+    padding-right: 10px;
+    scrollbar-width: 3px;
+}
+
+
+/* Style for thumbnails (already in JS, but here for reference) */
+#photoContent img {
+    width: 100px;
+    height: 100px;
+    object-fit: cover;
+    border: 1px solid white;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: transform 0.2s;
+}
+
+#photoContent img:hover {
+    transform: scale(1.05);
+}
+
+/* Full image popup (already in JS, but here for consistency) */
+#fullImagePopup {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.9);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 100;
+}
+
+#fullImagePopup img {
+    max-width: 90%;
+    max-height: 90%;
+    border: 2px solid white;
+    border-radius: 5px;
+}
+
+#directionalArrow {
+    position: absolute;
+    /* Center the arrow on the screen initially; JavaScript will adjust */
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%); /* Center the arrow itself */
+    transition: transform 0.1s ease; /* Smooth movement */
+}
+
+/* Responsive Design for Mobile - Double Button and Slider Sizes */
+@media (max-width: 1280px) {
+    body {
+        font-size: 1.2rem;
+    }
+    table {
+        font-size: 1.5rem;
+    }
+    input {
+        font-size: 1.5rem;
+    }
+    #mainControls {
+        position: absolute;
+        flex-wrap: wrap; /* Allow wrapping on smaller screens */
+        gap: 15px; /* Slightly larger gap for touch devices */
+        left: 250px;
+    }
+    #buttonToolTip {
+        font-size: 1.1rem;
+    }
+
+
+    .hamburger {
+        font-size: 1.5rem; /* Keep larger size on mobile */
+        padding: 24px 48px;
+        max-height: 80px;
+    }
+
+    .menu {
+        top: 79px; /* Moved down to avoid overlap (was 40px) */
+        width: 280px;
+    }
+
+    .submenu {
+        width: 305px;
+    }
+
+    .submenu button{
+        
+        padding: 12px 24px;
+        font-size: 1.2rem;
+    }
+    /* Double button width and height */
+    .button {
+        padding: 24px 40px; /* Doubled from 8px 16px */
+        font-size: 1.5rem; /* Slightly larger text for readability */
+    }
+
+    #mainControls {
+        position: absolute;
+        flex-wrap: wrap; /* Allow wrapping on smaller screens */
+        gap: 15px; /* Slightly larger gap for touch devices */
+        left: 130px;
+    }
+
+    /* Specific styling for pauseResume to fix size */
+    #pauseResume {
+        width: 70px; /* Fixed width to accommodate both icons */
+        height: 78px; /* Fixed width to accommodate both icons */
+        min-height: 78px; /* Ensure it doesn’t shrink */
+        min-width: 70px; /* Ensure it doesn’t shrink */
+        font-size: 1.5rem;
+    }
+
+    #timeScaleControl {
+        position: absolute;
+        top: auto; /* Remove top positioning */
+        bottom: 50px; /* Place at bottom */
+        left: 10px; /* Align to left edge */
+        flex-wrap: wrap;
+        gap: 15px;
+    }
+
+    #timeLabel {
+        display: none;
+    }
+
+    /* Double slider width and height */
+    #timeScaleSlider {
+        width: 550px;
+        height: 30px;
+        background: #333;
+        border-radius: 10px;
+        top: 0px;
+        position: absolute;
+        display: block; /* Ensure it’s visible on mobile */
+    }
+
+    /* Customize slider thumb for touch */
+    #timeScaleSlider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        width: 50px; /* Larger thumb for touch */
+        height: 50px;
+        background: #FFFFFF;
+        border-radius: 50%;
+        cursor: pointer;
+        margin-top: -20px; /* Center thumb on track (half of thumb height - track height) */
+    }
+    #timeScaleSlider::-moz-range-thumb {
+        width: 50px;
+        height: 50px;
+        background: #FFFFFF;
+        border-radius: 50%;
+        cursor: pointer;
+        margin-top: -20px; /* Center thumb on track (half of thumb height*/
+    }
+    
+    #planetSearchContainer {
+        left: 460px;
+    }
+
+    #planetSearch {
+        width: 180px; /* Double width for mobile */
+        height: 60px;
+        padding: 8px; /* Double padding */
+        font-size: 1.5rem; /* Larger text */
+    }
+
+    #searchDropdown {
+        width: 200px; /* Match input width */
+        font-size: 1.5rem;
+    }
+
+    #searchDropdown div {
+        font-size: 1.5rem;
+    }
+
+    #throttleIndicator {
+        bottom: 250px; /* Align with larger slider */
+        left: 10px; /* Right of 550px-wide slider */
+    }
+    #throttleBarContainer {
+        width: 50px; /* Match doubled slider height */
+        height: 550px; /* Match doubled slider width */
+    }
+    #throttleBar {
+        border-radius: 6px; /* Slightly larger radius for larger bar */
+    }
+    #throttleIndicator span {
+        font-size: 1.2rem; /* Larger text for readability */
+    }
+    #throttleBarContainer div {
+        height: 4px; /* Thicker ticks */
+        width: 10px; /* Longer ticks */
+        left: 55px; /* Adjust tick position */
+    }
+    #throttleBarContainer span {
+        left: 70px; /* Adjust label position */
+    }
+
+    #dateTimeLabel {
+        font-size: 1.3rem; /* Larger text for readability */
+        top: 40px; /* Adjust position for larger elements */
+    }
+
+    #timeRateLabel {
+        font-size: 1.3rem; /* Larger text for readability */
+        top: 10px; /* Adjust position for larger elements */
+    }
+
+    #fpsCounter {
+        font-size: 1.3rem; /* Larger text for readability */
+        top: 70px; /* Adjust position for larger elements */
+    }
+
+    #focusBox {
+        top: 100px;
+        left: 10px;
+        max-width: 250px;
+        max-height: 900px;
+        font-size: 1.5rem;
+    }
+
+    #timeLabel {
+        position: absolute;
+        bottom: 10px;
+        font-size: 1.5rem;
+    }
+
+    .button-focus {
+        padding: 4px 8px; /* Larger size */
+        font-size: 3rem; /* Consistent with menu */
+    }
+
+    .toggle-button {
+        font-size: 1.5rem;
+        width: 30px;
+        height: 30px;
+    }
+
+    .h-toggle-button {
+        font-size: 1.5rem;
+        width: 36px;
+        height: 36px;
+    }
+    
+    .toggle-plane-button {
+        font-size: 1.5rem;
+        width: 30px;
+        height: 30px;
+    }
+
+    .f_description {
+        display: none;
+    }
+}
+
+/* Apply mobile-like styles when large-controls class is active */
+body.large-controls {
+    font-size: 1.2rem;
+}
+
+body.large-controls table {
+    font-size: 1.5rem;
+}
+
+body.large-controls input {
+    font-size: 1.5rem;
+}
+
+body.large-controls #mainControls {
+    position: absolute;
+    flex-wrap: wrap;
+    gap: 15px;
+    left: 130px; /* Adjusted for hamburger menu size */
+}
+
+body.large-controls #buttonToolTip {
+    font-size: 1.1rem;
+}
+
+body.large-controls .hamburger {
+    font-size: 1.5rem;
+    padding: 24px 48px;
+    max-height: 80px;
+}
+
+body.large-controls .menu {
+    top: 79px;
+    width: 280px;
+}
+body.large-controls .submenu {
+    width: 305px;
+}
+
+body.large-controls .submenu button {
+    padding: 12px 24px;
+    font-size: 1.2rem;
+}
+
+body.large-controls .button {
+    padding: 24px 40px;
+    font-size: 1.5rem;
+}
+
+body.large-controls #pauseResume {
+    width: 70px;
+    height: 78px;
+    min-height: 78px;
+    min-width: 70px;
+    font-size: 1.5rem;
+}
+
+body.large-controls #timeScaleControl {
+    position: absolute;
+    top: auto;
+    bottom: 50px;
+    left: 10px;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+
+body.large-controls #timeLabel {
+    position: absolute;
+    bottom: 10px;
+    font-size: 1.5rem;
+}
+
+body.large-controls #timeScaleSlider {
+    width: 550px;
+    height: 30px;
+    background: #333;
+    border-radius: 10px;
+    top: 0px;
+    position: absolute;
+    display: block;
+}
+
+body.large-controls #timeScaleSlider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 50px;
+    height: 50px;
+    background: #FFFFFF;
+    border-radius: 50%;
+    cursor: pointer;
+    margin-top: -20px;
+}
+
+body.large-controls #timeScaleSlider::-moz-range-thumb {
+    width: 50px;
+    height: 50px;
+    background: #FFFFFF;
+    border-radius: 50%;
+    cursor: pointer;
+    margin-top: -20px;
+}
+
+body.large-controls #planetSearchContainer {
+    left: 460px;
+}
+
+body.large-controls #planetSearch {
+    width: 180px;
+    height: 60px;
+    padding: 8px;
+    font-size: 1.5rem;
+}
+
+body.large-controls #searchDropdown {
+    width: 200px;
+    font-size: 1.5rem;
+}
+
+body.large-controls #searchDropdown div {
+    font-size: 1.5rem;
+}
+
+body.large-controls #throttleIndicator {
+    bottom: 150px;
+    left: 10px;
+    width: 140px;
+}
+
+body.large-controls #positiveThrottleContainer,
+body.large-controls #negativeThrottleContainer {
+    width: 50px;
+    height: 550px;
+}
+
+body.large-controls #positiveThrottleBar,
+body.large-controls #negativeThrottleBar {
+    border-radius: 6px;
+}
+
+body.large-controls #throttleIndicator span {
+    font-size: 1.2rem;
+}
+
+body.large-controls #positiveThrottleContainer div,
+body.large-controls #negativeThrottleContainer div {
+    height: 4px;
+    width: 0px;
+    left: 0px;
+}
+
+body.large-controls #positiveThrottleContainer span,
+body.large-controls #negativeThrottleContainer span {
+    left: 70px;
+}
+
+body.large-controls #dateTimeLabel {
+    font-size: 1.3rem;
+    top: 40px;
+}
+
+body.large-controls #timeRateLabel {
+    font-size: 1.3rem;
+    top: 10px;
+}
+
+body.large-controls #fpsCounter {
+    font-size: 1.3rem;
+    top: 70px;
+}
+
+body.large-controls #focusBox {
+    top: 100px;
+    left: 10px;
+    max-width: 350px;
+    max-height: 900px;
+    font-size: 1.5rem;
+}
+
+body.large-controls .button-focus {
+    padding: 4px 8px;
+    font-size: 3rem;
+}
+
+body.large-controls .toggle-button {
+    font-size: 1.5rem;
+    width: 30px;
+    height: 30px;
+}
+
+body.large-controls .h-toggle-button {
+    font-size: 1.5rem;
+    width: 36px;
+    height: 36px;
+}
+
+body.large-controls .toggle-plane-button {
+    font-size: 1.5rem;
+    width: 30px;
+    height: 30px;
+}
+
+body.large-controls #baseControls {
+    position: absolute; bottom: 70px; left: 10px;
+}
