@@ -1,6 +1,6 @@
 # planetarium.Earth
 
-**Interactive 3D solar system simulation** (v0.9.3 beta)
+**Interactive 3D solar system simulation** (v0.9.4 beta)
 
 A browser-based planetarium built with [Three.js](https://threejs.org/). Explore the Sun, planets, major moons, dwarf planets, and named asteroids with real orbital elements, science data, and customizable rendering — all running in **WebGL 2.0**.
 
