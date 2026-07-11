@@ -63,6 +63,83 @@ CHANGE LOG
 ----------
 ################################################################################
 2026-07-11
+S-00017
+  1. [.] solar_system.js — fix load hang: declare atmosphereEffectsVisible before createSimpleCelestialBody (TDZ ReferenceError)
+################################################################################
+################################################################################
+2026-07-11
+S-00016
+  1. [.] shaders.js — Earth aurora: sparse crisp per-pixel domain-warped FBM ribbons (fragment-driven, not pixelated)
+  2. [.] solar_system.js — Earth aurora 192-seg mesh + intensity; 0 key toggles atmosphere/aurora/GRS lightning visibility
+  3. [.] solar_system.html / README.md — document 0 key (bare planet view) in Simulation Controls + controls summary
+################################################################################
+################################################################################
+2026-07-11
+S-00015
+  1. [.] shaders.js — Earth aurora: domain-warped multi-strand curvy ribbons (remove polar sunburst rays)
+################################################################################
+################################################################################
+2026-07-11
+S-00014
+  1. [.] shaders.js — delete old Earth ray-marched aurora; new earthAuroraVertex/Fragment (vertex-displaced green/red curtains)
+  2. [.] solar_system.js — Earth uses new aurora mesh; Jupiter volumetric aurora unchanged
+################################################################################
+################################################################################
+2026-07-11
+S-00013
+  1. [.] shaders.js — Earth aurora redo: O green/red altitude colors (no neon pink); true radial spike columns
+  2. [.] solar_system.js — Earth aurora shell taller (1.12×) for orthogonal spike height
+################################################################################
+################################################################################
+2026-07-11
+S-00012
+  1. [.] shaders.js — GRS lightning shader (near ~22°S Great Red Spot); remove lightning from polar aurora
+  2. [.] solar_system.js — separate grsLightning mesh + wall-clock 5–30s scheduler (not tied to aurora toggle)
+################################################################################
+################################################################################
+2026-07-11
+S-00011
+  1. [.] shaders.js — Jupiter polar storm: subtle lightning arcs around eye ring (flash-gated)
+  2. [.] solar_system.js — wall-clock lightning scheduler (5–30s, independent of timeScale); lightningFlash/Seed uniforms
+################################################################################
+################################################################################
+2026-07-11
+S-00010
+  1. [.] shaders.js — Jupiter aurora: shrink to ~70°+ magnetic polar cap, ~10° dipole offset from spin pole, main-oval ring accent
+  2. [.] solar_system.js — Jupiter atmosphereScale 1.045 (tighter shell) + slight intensity bump
+################################################################################
+################################################################################
+2026-07-11
+S-00009
+  1. [.] shaders.js — fix invisible aurora: declare modelMatrix in fragment (Three r132 only injects it in vertex); derive shell radii from mesh; boost density
+  2. [.] solar_system.js — aurora DoubleSide + higher default intensity so Earth/Jupiter effects are visible
+################################################################################
+################################################################################
+2026-07-11
+S-00008
+  1. [.] shaders.js — volumetric ray-marched aurora (WebGL 2.0): Earth soft ribbons + radial green→blue→red spikes; Jupiter north-pole sparkling blue ice swirl
+  2. [.] solar_system.js — createAuroraMesh/sync for Earth & Jupiter; variant/atmosphereScale uniforms; WebGL 2.0 required messaging; settings label “Planet Auroras”
+  3. [.] README.md / solar_system.html / FILE_MANIFEST.txt — WebGL 2.0 requirement + aurora feature docs
+################################################################################
+################################################################################
+2026-07-11
+S-00007
+  1. [.] shaders.js — Earth night lights: UV multi-tap warm halo + hot cores + limb boost; gated by nightFactor (fades on day side)
+  2. [.] README.md — document night-side city glow / terminator fade
+################################################################################
+################################################################################
+2026-07-11
+S-00006
+  1. [textures_lo] earth_night_lights.png — replace procedural blobs with NASA Black Marble 2016 (512×256 equirect)
+  2. [textures_md] earth_night_lights.png — NASA Black Marble 2016 (1024×512)
+  3. [textures_hi] earth_night_lights.png — NASA Black Marble 2016 (2048×1024)
+  4. [textures_mx] earth_night_lights.png — NASA Black Marble 2016 (3600×1800 full 0.1° source)
+  5. [.] shaders.js — Earth night fragment: emphasize city peaks over dim Black Marble land fill
+  6. [.] solar_system.html — acknowledgements: NASA Black Marble / Earth at Night link
+  7. [.] README.md / FILE_MANIFEST.txt / VERSION_TRACKING.txt — document real night-lights source
+################################################################################
+################################################################################
+2026-07-11
 S-00005
   1. [.] solar_system.js — live-apply render settings (pixel ratio, anisotropic, advanced shaders/bloom) without page reload; store body textures for material rebuild; selective reload only for texture size / AA / complex meshes / log depth
   2. [.] solar_system.js — Render Settings Apply no longer closes popup on live apply; Cancel renamed flow to Done (close only); reload path still full reloads

@@ -55,9 +55,10 @@ solar_image_list.js
 shaders.js
   Custom GLSL materials: sun emissive / corona / glow / fresnel; orbit trails
   (planet, moon, asteroid); advanced planet (soft lighting), Earth day/night,
-  ring lighting + planet umbra, aurora, and fullscreen bloom extract/blur/combine.
+  ring lighting + planet umbra, volumetric ray-marched aurora (Earth ribbons /
+  spikes + Jupiter polar ice swirl), and fullscreen bloom extract/blur/combine.
   Logarithmic-depth variants where needed. Exports ss_shaders registry used by
-  solar_system.js.
+  solar_system.js. Requires WebGL 2.0.
 
 solar_system_populate_track.js
   Helpers for Track submenu population and orbital / equatorial plane meshes
@@ -182,7 +183,7 @@ Typical contents per tier:
   - Atmosphere overlays (atmosphere_*_texture.*)
   - Ring maps (jupiter/saturn/uranus/neptune_ring_*)
   - Normal / specular / bump maps (normal_map_*, specular_map_earth, etc.)
-  - Earth night lights (earth_night_lights.png) for advanced Earth night-side shader
+  - Earth night lights (earth_night_lights.png) — NASA Black Marble 2016 VIIRS composite for advanced Earth night-side shader
   - Sun textures, star / milky-way backdrops
   - textures_*/asteroid/ — DDS (and some PNG) asteroid surface packs
 

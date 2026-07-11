@@ -2,7 +2,7 @@
 
 **Interactive 3D solar system simulation** (v0.9.3 beta)
 
-A browser-based planetarium built with [Three.js](https://threejs.org/). Explore the Sun, planets, major moons, dwarf planets, and named asteroids with real orbital elements, science data, and customizable rendering — all running in WebGL.
+A browser-based planetarium built with [Three.js](https://threejs.org/). Explore the Sun, planets, major moons, dwarf planets, and named asteroids with real orbital elements, science data, and customizable rendering — all running in **WebGL 2.0**.
 
 **Author:** Jon Kakaley ([@JonKakaley](https://x.com/JonKakaley))  
 **Repository:** [github.com/jonK1984/planetarium.earth](https://github.com/jonK1984/planetarium.earth)
@@ -43,24 +43,24 @@ Each option is independent. An effect runs only when the **master is ON** and th
 |--------|----------------|
 | Sun Surface Turbulence | Animated FBM noise on the Sun surface |
 | Sun Corona & Fresnel | Stronger outer glow plus rim fresnel on the Sun |
-| Earth Night Lights | Day/night blend with city lights (`earth_night_lights.png`) on the dark side |
+| Earth Night Lights | Day/night blend with real city lights (`earth_night_lights.png` from NASA Black Marble 2016); soft warm glow on the dark side that fades at the terminator |
 | Soft Terminator Lighting | Soft wrap lighting on textured bodies (replaces hard day/night cut) |
 | Ring Lighting & Shadows | Sun-lit rings with planet umbra on the ring plane |
 | Bloom & Tone Mapping | Mild bloom on bright areas + ACES filmic tone mapping |
 | Cloud Motion | Reserved cloud-motion control (cloud layers still use the standard Phong shells) |
-| Earth Aurora | Additive polar aurora curtains on Earth’s night side |
+| Planet Auroras (Earth & Jupiter) | Volumetric ray-marched auroras: Earth polar ribbons with radial green→blue→red spikes; Jupiter north-pole sparkling blue ice swirl |
 | Io Volcanic Glow | Warm emissive tint on Io |
 
 Atmospheres/cloud layers use the standard transparent Phong shells (advanced atmospheric scattering was removed after it distorted the scene).
 
-**Performance tip:** Leave Advanced Shaders **OFF** on low-end devices. Bloom and high texture tiers are the heaviest options when the master is ON.
+**Performance tip:** Leave Advanced Shaders **OFF** on low-end devices. Bloom, high texture tiers, and volumetric auroras are the heaviest options when the master is ON.
 
 ---
 
 ## Requirements
 
-- A modern browser with **WebGL** (Microsoft Edge recommended; Chrome, Firefox, and Safari also tested)
-- Faster CPU/GPU recommended for high texture tiers, complex meshes, and advanced shaders
+- A modern browser with **WebGL 2.0** (required — Chrome, Edge, Firefox, and Safari on recent OS versions)
+- Faster CPU/GPU recommended for high texture tiers, complex meshes, and advanced shaders (auroras use volumetric ray marching)
 - No build toolchain — static HTML, CSS, and JavaScript only
 
 ---
@@ -121,6 +121,7 @@ Full tables live under the in-app **Help** menu (Simulation / Orbital / Flight c
 | Search body | Search bar (“Search Planet…”) |
 | Focus body under crosshair (flight) | `T` |
 | Cycle previous / next body | `,` / `.` |
+| Toggle atmospheres / auroras / storm lightning (bare planet) | `0` |
 | Render / advanced shaders | Video → Render Settings |
 
 ---
@@ -132,7 +133,7 @@ Full tables live under the in-app **Help** menu (Simulation / Orbital / Flight c
 - **NASA** — planetary data, imagery, and scientific insights
 - **JPL** — orbital elements and physical constants
 - **Three.js** community — 3D rendering library
-- **Solar System Scope**, **NASA Blue Marble**, **Celestia Motherlode**, and various 3D texture artists — planetary textures
+- **Solar System Scope**, **NASA Blue Marble**, **NASA Black Marble** (Earth night lights), **Celestia Motherlode**, and various 3D texture artists — planetary textures
 
 ---
 
@@ -141,7 +142,7 @@ Full tables live under the in-app **Help** menu (Simulation / Orbital / Flight c
 Code and documentation changes are recorded in plain language in:
 
 - **VERSION_TRACKING.txt** — session IDs (`S-#####`) and numbered change lines  
-  - Recent: **S-00002** advanced shader package; **S-00003** removed atmospheric scattering; **S-00004** README / tracking docs
+  - Recent: **S-00016** Earth aurora ribbons + `0` key atmosphere toggle; **S-00007** night-side city glow; **S-00006** NASA Black Marble
 - **FILE_MANIFEST.txt** — which files exist and what they do
 
 Git history shows diffs; these files record intent for future maintainers.

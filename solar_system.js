@@ -186,7 +186,7 @@ const SHADER_OPTION_LABELS = {
     shaderRingLighting: 'Ring Lighting & Shadows',
     shaderBloom: 'Bloom & Tone Mapping',
     shaderCloudMotion: 'Cloud Motion',
-    shaderAurora: 'Earth Aurora',
+    shaderAurora: 'Planet Auroras (Earth & Jupiter)',
     shaderIoGlow: 'Io Volcanic Glow'
 };
 
@@ -298,7 +298,7 @@ function setTexturePath(size) {
 
 
 
-// Probe WebGL 2 before creating the renderer so logarithmicDepthBuffer matches capability.
+// WebGL 2.0 is required (volumetric auroras, log depth, advanced shaders).
 // (WebGL2RenderingContext also inherits from WebGLRenderingContext, so instanceof WebGLRenderingContext is not a WebGL1 test.)
 function supportsWebGL2() {
     try {
@@ -308,12 +308,17 @@ function supportsWebGL2() {
         return false;
     }
 }
-if (settings.useLogDepthBuffer === 'ON' && !supportsWebGL2()) {
+const hasWebGL2 = supportsWebGL2();
+if (!hasWebGL2) {
+    console.error('planetarium.Earth requires WebGL 2.0. This browser only exposes WebGL 1.0.');
+    alert('This simulation requires WebGL 2.0.\nPlease use a current version of Chrome, Edge, Firefox, or Safari.');
+}
+if (settings.useLogDepthBuffer === 'ON' && !hasWebGL2) {
     console.warn('Logarithmic depth buffer requires WebGL 2.0, but only WebGL 1.0 is available.');
     settings.useLogDepthBuffer = 'OFF';
 }
 
-// Initialize renderer with settings
+// Initialize renderer with settings (Three.js prefers WebGL2 when available)
 const renderer = new THREE.WebGLRenderer({
     canvas: document.getElementById('canvas'),
     antialias: settings.antiAliasing === 'ON', // Simple boolean toggle
@@ -322,6 +327,9 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio * settings.pixelRatio);
 const gl = renderer.getContext();
+if (hasWebGL2 && !(gl instanceof WebGL2RenderingContext)) {
+    console.warn('WebGL 2.0 is available but Three.js did not create a WebGL2 context.');
+}
 
 // Tone mapping when bloom package is enabled
 if (isShaderOn('shaderBloom')) {
@@ -713,6 +721,28 @@ let ambientIntensity = videoSettings.ambientIntensity;
 let asteroidBeltsVisible = videoSettings.asteroidBeltsVisible;
 let asteroidOrbitsVisible = videoSettings.asteroidOrbitsVisible; // New
 let asteroidTrailsVisible = videoSettings.asteroidTrailsVisible; // New
+
+// Atmosphere / aurora / GRS-lightning shells — toggle with 0 for bare-planet view
+// Declared early: createSimpleCelestialBody reads this while building meshes.
+let atmosphereEffectsVisible = true;
+const ATMOSPHERE_EFFECT_NAMES = ['atmosphere', 'aurora', 'grsLightning'];
+
+function setAtmosphereEffectsVisible(visible) {
+    atmosphereEffectsVisible = !!visible;
+    if (typeof celestialObjects === 'undefined' || !celestialObjects.length) return;
+    celestialObjects.forEach(obj => {
+        if (!obj.mesh) return;
+        obj.mesh.traverse(child => {
+            if (child.name && ATMOSPHERE_EFFECT_NAMES.indexOf(child.name) !== -1) {
+                child.visible = atmosphereEffectsVisible;
+            }
+        });
+    });
+}
+
+function toggleAtmosphereEffects() {
+    setAtmosphereEffectsVisible(!atmosphereEffectsVisible);
+}
 
 // Update initial states
 const fpsCounter = document.getElementById('fpsCounter');
@@ -1401,25 +1431,197 @@ function createRingShaderMaterial(ringTexture, planetRadiusScaled) {
 }
 
 function createAuroraMesh(celestialBody) {
-    const radius = celestialBody.radius * nHardCodeScaleFactor * 1.035;
-    const geo = new THREE.SphereGeometry(radius, 64, 64);
+    const surfaceR = celestialBody.radius * nHardCodeScaleFactor;
+    const isJupiter = celestialBody.name === 'Jupiter';
+    const isEarth = celestialBody.name === 'Earth';
+
+    // --- Earth: smooth low-freq bulge + per-pixel crisp ribbon mask ---
+    if (isEarth) {
+        // Higher tessellation so vertex bulge stays smooth; detail is fragment-driven
+        const geo = new THREE.SphereGeometry(surfaceR * 1.008, 192, 192);
+        const mat = new THREE.ShaderMaterial({
+            uniforms: {
+                time: { value: 0.0 },
+                sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+                intensity: { value: 0.55 },
+                maxHeight: { value: 0.04 }
+            },
+            vertexShader: ss_shaders.earthAuroraVertex,
+            fragmentShader: ss_shaders.earthAuroraFragment,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true,
+            blending: THREE.AdditiveBlending,
+            side: THREE.FrontSide
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.name = 'aurora';
+        mesh.renderOrder = 3;
+        mesh.frustumCulled = true;
+        return mesh;
+    }
+
+    // --- Jupiter: volumetric ray-marched polar swirl (unchanged) ---
+    const atmosphereScale = 1.045;
+    const outerR = surfaceR * atmosphereScale;
+    const geo = new THREE.SphereGeometry(outerR, 128, 128);
     const mat = new THREE.ShaderMaterial({
         uniforms: {
             time: { value: 0.0 },
             sunDirection: { value: new THREE.Vector3(1, 0, 0) },
-            intensity: { value: 1.0 }
+            intensity: { value: 0.3 },
+            variant: { value: 1.0 },
+            planetRadius: { value: surfaceR },
+            atmosphereScale: { value: atmosphereScale }
         },
         vertexShader: ss_shaders.auroraVertex,
         fragmentShader: ss_shaders.auroraFragment,
         transparent: true,
         depthWrite: false,
+        depthTest: true,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'aurora';
+    mesh.renderOrder = 3;
+    mesh.frustumCulled = true;
+    return mesh;
+}
+
+// Named southern-hemisphere storm cells (Three.js UV: v=0 north, v=1 south).
+// GRS ~22°S → v ≈ 0.622; other sites spread across the lower hemisphere.
+const JUPITER_STORM_SITES = [
+    // Great Red Spot (primary)
+    { u: 0.48, v: 0.622, ew: 0.065, ns: 0.038, weight: 2.5 },
+    // Other SEB / southern belt storm cells (approximate longitudes)
+    { u: 0.12, v: 0.64, ew: 0.04, ns: 0.028, weight: 1.0 },
+    { u: 0.78, v: 0.61, ew: 0.045, ns: 0.03, weight: 1.0 },
+    { u: 0.30, v: 0.70, ew: 0.035, ns: 0.025, weight: 0.9 },
+    { u: 0.62, v: 0.68, ew: 0.038, ns: 0.026, weight: 0.9 },
+    { u: 0.90, v: 0.75, ew: 0.04, ns: 0.03, weight: 0.8 },
+    { u: 0.22, v: 0.80, ew: 0.035, ns: 0.028, weight: 0.7 },
+    { u: 0.55, v: 0.58, ew: 0.042, ns: 0.03, weight: 0.8 }
+];
+
+/** Pick a storm site (weighted) or a random southern-hemisphere cell. */
+function pickJupiterStormSite() {
+    // ~35% fully random southern cell so the whole lower hemisphere can flash
+    if (Math.random() < 0.35) {
+        return {
+            u: Math.random(),
+            // v 0.52–0.88 ≈ equator-south through deep southern mid-latitudes
+            v: 0.52 + Math.random() * 0.36,
+            ew: 0.028 + Math.random() * 0.035,
+            ns: 0.02 + Math.random() * 0.02
+        };
+    }
+    let total = 0;
+    for (let i = 0; i < JUPITER_STORM_SITES.length; i++) total += JUPITER_STORM_SITES[i].weight;
+    let r = Math.random() * total;
+    for (let i = 0; i < JUPITER_STORM_SITES.length; i++) {
+        r -= JUPITER_STORM_SITES[i].weight;
+        if (r <= 0) {
+            const s = JUPITER_STORM_SITES[i];
+            // Slight jitter so bolts don't always hit the exact same pixel
+            return {
+                u: (s.u + (Math.random() - 0.5) * 0.04 + 1) % 1,
+                v: s.v + (Math.random() - 0.5) * 0.02,
+                ew: s.ew * (0.85 + Math.random() * 0.35),
+                ns: s.ns * (0.85 + Math.random() * 0.35)
+            };
+        }
+    }
+    const s = JUPITER_STORM_SITES[0];
+    return { u: s.u, v: s.v, ew: s.ew, ns: s.ns };
+}
+
+/**
+ * Southern-storm lightning shell — separate from polar aurora.
+ * Flashes near GRS and other lower-hemisphere storm cells.
+ */
+function createJupiterGrsLightningMesh(celestialBody) {
+    const surfaceR = celestialBody.radius * nHardCodeScaleFactor;
+    const shellR = surfaceR * 1.012;
+    const geo = new THREE.SphereGeometry(shellR, 96, 96);
+    const site = pickJupiterStormSite();
+    const mat = new THREE.ShaderMaterial({
+        uniforms: {
+            lightningFlash: { value: 0.0 },
+            lightningSeed: { value: 0.0 },
+            stormUV: { value: new THREE.Vector2(site.u, site.v) },
+            stormScale: { value: new THREE.Vector2(site.ew, site.ns) },
+            intensity: { value: 0.85 }
+        },
+        vertexShader: ss_shaders.grsLightningVertex,
+        fragmentShader: ss_shaders.grsLightningFragment,
+        transparent: true,
+        depthWrite: false,
+        depthTest: true,
         blending: THREE.AdditiveBlending,
         side: THREE.FrontSide
     });
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.name = 'aurora';
-    mesh.rotation.x = Math.PI / 2;
+    mesh.name = 'grsLightning';
+    mesh.renderOrder = 4;
+    mesh.frustumCulled = true;
+    // First bolt 3–8s from now (real wall-clock, not sim timeScale)
+    mesh.userData.lightning = {
+        nextFlashAt: performance.now() + (3 + Math.random() * 5) * 1000,
+        flashStart: -1e9,
+        flashDuration: 0.9,
+        seed: Math.random() * 1000
+    };
     return mesh;
+}
+
+/**
+ * Advance Jupiter southern-storm lightning using real wall-clock ms.
+ * Interval 3–8s; arc duration 0.9s ± 0.4s; new site + pattern seed each event.
+ */
+function updateJupiterGrsLightning(lightningMesh, nowMs) {
+    if (!lightningMesh || !lightningMesh.material || !lightningMesh.material.uniforms) return;
+    const u = lightningMesh.material.uniforms;
+    if (!u.lightningFlash) return;
+
+    let state = lightningMesh.userData.lightning;
+    if (!state) {
+        state = {
+            nextFlashAt: nowMs + (3 + Math.random() * 5) * 1000,
+            flashStart: -1e9,
+            flashDuration: 0.9,
+            seed: Math.random() * 1000
+        };
+        lightningMesh.userData.lightning = state;
+    }
+
+    if (nowMs >= state.nextFlashAt) {
+        state.flashStart = nowMs;
+        state.seed = Math.random() * 10000;
+        state.flashDuration = 0.9 + (Math.random() * 0.8 - 0.4);
+        state.nextFlashAt = nowMs + (3 + Math.random() * 5) * 1000;
+
+        // New storm cell: GRS / named southern sites / random lower hemisphere
+        const site = pickJupiterStormSite();
+        if (u.stormUV) u.stormUV.value.set(site.u, site.v);
+        if (u.stormScale) u.stormScale.value.set(site.ew, site.ns);
+    }
+
+    const age = (nowMs - state.flashStart) / 1000;
+    const dur = state.flashDuration || 0.9;
+    let flash = 0.0;
+    if (age >= 0.0 && age < dur) {
+        const t = age / dur;
+        const env = Math.exp(-t * 2.8) * (1.0 - t * 0.15);
+        const flicker = 0.55 + 0.45 * Math.max(0, Math.sin(age * 22.0 + 0.4));
+        const pulse2 = t > 0.15 ? Math.exp(-(t - 0.15) * 5.5) * 0.55 : 0.0;
+        const pulse3 = t > 0.35 ? Math.exp(-(t - 0.35) * 4.5) * 0.4 : 0.0;
+        const pulse4 = t > 0.55 ? Math.exp(-(t - 0.55) * 4.0) * 0.28 : 0.0;
+        flash = Math.min(1.0, env * flicker + pulse2 + pulse3 + pulse4);
+    }
+
+    u.lightningFlash.value = flash;
+    u.lightningSeed.value = state.seed;
 }
 
 function createPlanetRingGeometry( innerRadius = 0.5, outerRadius = 1, thetaSegments = 32, phiSegments = 1, thetaStart = 0, thetaLength = Math.PI * 2)
@@ -1735,20 +1937,24 @@ function createSimpleCelestialBody(celestialBody) {
         const cloudMesh = new THREE.Mesh(cloudGeometry, cloudMaterial);
         cloudMesh.name = "atmosphere";
         cloudMesh.rotation.x = Math.PI / 2;
+        cloudMesh.visible = atmosphereEffectsVisible;
         celestialBodyGroup.add(cloudMesh);
     }
 
-    // Earth aurora — child of surface mesh so group child indices stay stable
-    if (celestialBody.name === 'Earth' && isShaderOn('shaderAurora')) {
+    // Planet auroras — child of surface mesh so group child indices stay stable
+    // Earth: vertex-displaced green/red curtains; Jupiter: volumetric polar blue swirl
+    if ((celestialBody.name === 'Earth' || celestialBody.name === 'Jupiter') && isShaderOn('shaderAurora')) {
         const auroraMesh = createAuroraMesh(celestialBody);
-        // Geometry is absolute radius; as child of surface sphere, scale relative to planet radius
-        const surfaceR = celestialBody.radius * nHardCodeScaleFactor;
-        auroraMesh.scale.setScalar((surfaceR * 1.035) / surfaceR);
-        // Replace geometry radius with surface radius so scale applies cleanly
-        auroraMesh.geometry.dispose();
-        auroraMesh.geometry = new THREE.SphereGeometry(surfaceR, 64, 64);
         if (auroraMesh.material.uniforms) advancedUniforms.push(auroraMesh.material.uniforms);
+        auroraMesh.visible = atmosphereEffectsVisible;
         simpleCelestialMesh.add(auroraMesh);
+    }
+
+    // Jupiter Great Red Spot lightning — independent of aurora (always on when body exists)
+    if (celestialBody.name === 'Jupiter') {
+        const grsMesh = createJupiterGrsLightningMesh(celestialBody);
+        grsMesh.visible = atmosphereEffectsVisible;
+        simpleCelestialMesh.add(grsMesh);
     }
 
     if (ringTexture)
@@ -4236,6 +4442,15 @@ function animate() {
                     u.ambientColor.value.set(ambientIntensity, ambientIntensity, ambientIntensity);
                 }
             });
+
+            // Jupiter GRS lightning: wall-clock 5–30s cadence (ignores sim timeScale; not aurora)
+            if (obj.data.name === 'Jupiter') {
+                const planetMesh = obj.mesh.getObjectByName('Jupiter') || obj.mesh.children[0];
+                const grs = planetMesh && planetMesh.getObjectByName
+                    ? planetMesh.getObjectByName('grsLightning')
+                    : null;
+                if (grs) updateJupiterGrsLightning(grs, currentTime);
+            }
         }
 
         if (obj.data.type === "star") {
@@ -5080,7 +5295,7 @@ function syncSunCoronaLive(obj) {
 }
 
 function syncAuroraLive(obj) {
-    if (!obj.data || obj.data.name !== 'Earth') return;
+    if (!obj.data || (obj.data.name !== 'Earth' && obj.data.name !== 'Jupiter')) return;
     const planetMesh = obj.mesh.getObjectByName(obj.data.name) || obj.mesh.children[0];
     if (!planetMesh || !planetMesh.isMesh) return;
 
@@ -5088,11 +5303,11 @@ function syncAuroraLive(obj) {
     if (isShaderOn('shaderAurora')) {
         if (!aurora) {
             const auroraMesh = createAuroraMesh(obj.data);
-            const surfaceR = obj.data.radius * nHardCodeScaleFactor;
-            auroraMesh.scale.setScalar(1.035);
-            auroraMesh.geometry.dispose();
-            auroraMesh.geometry = new THREE.SphereGeometry(surfaceR, 64, 64);
+            auroraMesh.visible = atmosphereEffectsVisible;
             planetMesh.add(auroraMesh);
+            // rebuildAdvancedUniforms() (caller) will pick up time/sun/planetRadius
+        } else {
+            aurora.visible = atmosphereEffectsVisible;
         }
     } else if (aurora) {
         planetMesh.remove(aurora);
@@ -6127,10 +6342,18 @@ document.getElementById('toggleAsteroidTrails').addEventListener('click', functi
 });
 
 
-// Add keydown event listener for cycling celestial bodies
-
 // Add keydown event listener for cycling celestial bodies, exiting focus mode, and targeting in FPS mode
 document.addEventListener('keydown', (event) => {
+    // Ignore when typing in search / text fields
+    const active = document.activeElement;
+    if (active && (
+        active.tagName === 'INPUT' ||
+        active.tagName === 'TEXTAREA' ||
+        active.isContentEditable
+    )) {
+        return;
+    }
+
     if (event.key === ',' || event.key === '.') {
         if (!celestialObjects.length) return; // No celestial bodies to cycle
 
@@ -6156,6 +6379,10 @@ document.addEventListener('keydown', (event) => {
         }
 
         event.preventDefault(); // Prevent default browser behavior
+    } else if (event.key === '0') {
+        // Toggle atmosphere shells, auroras, and GRS lightning — bare planet surface
+        toggleAtmosphereEffects();
+        event.preventDefault();
     } else if (event.key === 'Escape') {
         // Exit focus mode
         focusedPlanet = null;
