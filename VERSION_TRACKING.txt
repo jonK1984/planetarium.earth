@@ -63,6 +63,16 @@ CHANGE LOG
 ----------
 ################################################################################
 2026-07-11
+S-00022
+  1. [.] shaders.js — sun flares: quality-preserving speedups (max 4 concurrent ejecta; precompute slots/Rinv; unrolled FBM); full plasmaFBM kept (supersedes intermediate flare-perf experiments)
+  2. [.] shaders.js — Earth aurora: volumetric radial spike rays + ribbon layer; staggered rayGate lifecycle; dispose-safe Group
+  3. [.] solar_system.js — Earth aurora Group (ribbons + spikes ~1.085×R); disposeMeshDeep recurses children
+  4. [.] shaders.js / solar_system.js — analytic moon umbra on planet surfaces (soft/Earth shaders; sphere occlusion like ring shadows); shaderMoonShadows setting
+  5. [.] solar_system.js — moon trails planet-relative (parent under planet group; align with orbit ellipses); moon mesh lookup by object not children index
+  6. [.] solar_system.js — sun glow corona outer scale 1.55→1.08 only (getStarGlowMesh + syncSunCoronaLive); no fresnel/shader rewrites
+################################################################################
+################################################################################
+2026-07-11
 S-00021
   1. [.] shaders.js — sun flares: remove black limb ring (rInner at photosphere, hNorm from surface, chromosphere/footpoints seal gap)
 ################################################################################

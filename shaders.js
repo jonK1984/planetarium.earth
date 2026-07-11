@@ -628,6 +628,38 @@ const advancedPlanetVertex = `
     }
 `;
 
+// Analytic moon umbra on planet surfaces (same sphere-occlusion idea as ring planet shadow).
+// Returns 1.0 = fully lit, ~0.12 = deep umbra. Soft penumbra via smoothstep.
+const moonShadowUniformsAndFn = `
+    #define MAX_MOON_SHADOWS 8
+    uniform vec3 moonPositions[MAX_MOON_SHADOWS];
+    uniform float moonRadii[MAX_MOON_SHADOWS];
+    uniform float moonCount;
+    uniform float enableMoonShadows;
+
+    float moonUmbraFactor(vec3 worldPos, vec3 L) {
+        if (enableMoonShadows < 0.5 || moonCount < 0.5) return 1.0;
+        float factor = 1.0;
+        for (int i = 0; i < MAX_MOON_SHADOWS; i++) {
+            if (float(i) >= moonCount) break;
+            float R = moonRadii[i];
+            if (R < 1e-12) continue;
+            // Ray from surface toward sun; occlude if a moon sphere sits on that ray
+            vec3 rel = moonPositions[i] - worldPos;
+            float t = dot(rel, L);
+            if (t <= 0.0) continue;
+            vec3 closest = rel - L * t;
+            float d = length(closest);
+            if (d < R) {
+                float penumbra = smoothstep(R * 0.85, R, d);
+                float shade = mix(0.12, 1.0, penumbra);
+                factor = min(factor, shade);
+            }
+        }
+        return factor;
+    }
+`;
+
 // Soft-lit planet surface (map + optional normal/specular + wrap lighting)
 const softPlanetFragment = `
     #include <common>
@@ -644,6 +676,8 @@ const softPlanetFragment = `
     uniform float shininess;
     uniform vec3 emissiveColor;
     uniform float emissiveIntensity;
+
+    ${moonShadowUniformsAndFn}
 
     varying vec2 vUv;
     varying vec3 vNormalW;
@@ -669,12 +703,15 @@ const softPlanetFragment = `
         float diffuse = clamp((NdotL + wrap) / (1.0 + wrap), 0.0, 1.0);
         diffuse = smoothstep(0.0, 1.0, diffuse);
 
+        float shadow = moonUmbraFactor(vPositionW, L);
+        diffuse *= shadow;
+
         vec3 color = albedo * (ambientColor + diffuse);
 
         if (hasSpecularMap > 0.5) {
             float specMask = texture2D(specularMap, vUv).r;
             vec3 H = normalize(L + normalize(vViewDir));
-            float spec = pow(max(dot(N, H), 0.0), shininess) * specMask * max(NdotL, 0.0);
+            float spec = pow(max(dot(N, H), 0.0), shininess) * specMask * max(NdotL, 0.0) * shadow;
             color += vec3(spec);
         }
 
@@ -701,6 +738,8 @@ const earthSurfaceFragment = `
     uniform float hasSpecularMap;
     uniform float shininess;
 
+    ${moonShadowUniformsAndFn}
+
     varying vec2 vUv;
     varying vec3 vNormalW;
     varying vec3 vPositionW;
@@ -726,12 +765,15 @@ const earthSurfaceFragment = `
         dayFactor = smoothstep(0.0, 1.0, dayFactor);
         float nightFactor = 1.0 - dayFactor;
 
-        vec3 color = day * (ambientColor + dayFactor);
+        float shadow = moonUmbraFactor(vPositionW, L);
+        float dayLit = dayFactor * shadow;
+
+        vec3 color = day * (ambientColor + dayLit);
 
         if (hasSpecularMap > 0.5) {
             float specMask = texture2D(specularMap, vUv).r;
             vec3 H = normalize(L + normalize(vViewDir));
-            float spec = pow(max(dot(N, H), 0.0), shininess) * specMask * dayFactor;
+            float spec = pow(max(dot(N, H), 0.0), shininess) * specMask * dayLit;
             color += vec3(0.85, 0.9, 1.0) * spec;
         }
 
@@ -855,10 +897,9 @@ const ringFragment = `
 `;
 
 // ---------------------------------------------------------------------------
-// Earth aurora — sparse curvy ribbons
-// Vertex: low-frequency radial bulge only (smooth, anti-pixelated).
-// Fragment: crisp high-frequency ribbon mask (per-pixel sharpness + randomness).
-// Colors: O green body, soft O red tips.
+// Earth aurora — sparse curvy ribbons + radial spike rays
+// Ribbons: low-freq vertex bulge + per-pixel crisp ribbon mask (O green / soft O red).
+// Spikes: volumetric shell of thin field-aligned needles shooting outward along normals.
 // ---------------------------------------------------------------------------
 const earthAuroraVertex = `
     #include <common>
@@ -1064,6 +1105,311 @@ const earthAuroraFragment = `
 
         if (a < 0.006) discard;
         gl_FragColor = vec4(col, a);
+    }
+`;
+
+// ---------------------------------------------------------------------------
+// Earth aurora radial spikes — volumetric shell of field-aligned needles
+// Rays shoot outward along surface normals (orthogonal to atmosphere).
+// NOTE: Three.js r132 only injects modelMatrix into the vertex prefix;
+// fragment must declare it or the program fails to compile.
+// ---------------------------------------------------------------------------
+const earthAuroraSpikeVertex = `
+    #include <common>
+    #include <logdepthbuf_pars_vertex>
+
+    varying vec3 vPositionW;
+    varying vec3 vLocalPos;
+    varying vec3 vPlanetCenterW;
+
+    void main() {
+        vLocalPos = position;
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vPositionW = worldPos.xyz;
+        vPlanetCenterW = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        #include <logdepthbuf_vertex>
+    }
+`;
+
+const earthAuroraSpikeFragment = `
+    #include <common>
+    #include <logdepthbuf_pars_fragment>
+
+    // Required: not in Three r132 fragment prefix (only vertex).
+    uniform mat4 modelMatrix;
+
+    uniform float time;
+    uniform vec3 sunDirection;
+    uniform float intensity;
+    uniform float planetRadius;
+    uniform float atmosphereScale;
+
+    varying vec3 vPositionW;
+    varying vec3 vLocalPos;
+    varying vec3 vPlanetCenterW;
+
+    float hash13(vec3 p) {
+        p = fract(p * 0.1031);
+        p += dot(p, p.yzx + 33.33);
+        return fract((p.x + p.y) * p.z);
+    }
+
+    float valueNoise(vec3 p) {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float n000 = hash13(i);
+        float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
+        float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
+        float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
+        float n001 = hash13(i + vec3(0.0, 0.0, 1.0));
+        float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
+        float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
+        float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
+        return mix(
+            mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+            mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y),
+            u.z
+        );
+    }
+
+    float fbm(vec3 p) {
+        float v = 0.0;
+        float a = 0.5;
+        for (int i = 0; i < 4; i++) {
+            v += a * valueNoise(p);
+            p = p * 2.07 + vec3(1.7, 9.2, 3.1);
+            a *= 0.5;
+        }
+        return v;
+    }
+
+    vec3 worldToLocal(vec3 worldPos, vec3 center) {
+        vec3 col0 = modelMatrix[0].xyz;
+        vec3 col1 = modelMatrix[1].xyz;
+        vec3 col2 = modelMatrix[2].xyz;
+        float sx = max(length(col0), 1e-8);
+        float sy = max(length(col1), 1e-8);
+        float sz = max(length(col2), 1e-8);
+        mat3 R = mat3(col0 / sx, col1 / sy, col2 / sz);
+        vec3 d = worldPos - center;
+        vec3 rl = transpose(R) * d;
+        return vec3(rl.x / sx, rl.y / sy, rl.z / sz);
+    }
+
+    bool raySphere(vec3 ro, vec3 rd, float radius, out float t0, out float t1) {
+        float b = dot(ro, rd);
+        float c = dot(ro, ro) - radius * radius;
+        float h = b * b - c;
+        if (h < 0.0) return false;
+        h = sqrt(h);
+        t0 = -b - h;
+        t1 = -b + h;
+        return true;
+    }
+
+    // Crossfade which angular cells are live between time epochs.
+    // Each cell has its own phase offset so the oval doesn't swap at once.
+    // sparseLo: higher → fewer live rays. epochSec: life length in time units.
+    float rayGate(float cell, float family, float epochSec, float sparseLo) {
+        float off = hash13(vec3(cell, family, 9.17));
+        float e = time / epochSec + off * 0.97;
+        float e0 = floor(e);
+        float e1 = e0 + 1.0;
+        float fr = fract(e);
+        // Soft hermite crossfade so rays dissolve / appear gradually
+        float blend = fr * fr * (3.0 - 2.0 * fr);
+        blend = smoothstep(0.08, 0.92, blend);
+
+        float a0 = hash13(vec3(cell, family, e0 + 0.13));
+        float a1 = hash13(vec3(cell, family, e1 + 0.13));
+        float live0 = smoothstep(sparseLo, sparseLo + 0.18, a0);
+        float live1 = smoothstep(sparseLo, sparseLo + 0.18, a1);
+        float gate = mix(live0, live1, blend);
+
+        // Continuous envelope: dim/brighten while on, but don't fully kill the ray
+        float breath = 0.5 + 0.5 * sin(time * mix(0.35, 1.1, off) + off * 40.0 + family);
+        gate *= 0.4 + 0.6 * smoothstep(0.05, 0.42, breath);
+        return gate;
+    }
+
+    // Angular distance on circle to nearest discrete ray centerline.
+    // Returns: column strength (core + soft halo), ray hash for height/color.
+    void radialNeedles(vec3 n, float hNorm, float t, out float dens, out float tipTone) {
+        float lat = abs(n.y);
+        // Same polar oval family as ribbon aurora
+        float band = smoothstep(0.74, 0.86, lat) * (1.0 - smoothstep(0.94, 0.999, lat));
+        float halo = smoothstep(0.68, 0.82, lat) * (1.0 - smoothstep(0.91, 1.0, lat));
+        band = pow(clamp(band * 0.8 + halo * 0.35, 0.0, 1.0), 1.15);
+        if (band < 0.02) {
+            dens = 0.0;
+            tipTone = 0.0;
+            return;
+        }
+
+        float lon = atan(n.z, n.x);
+        // Domain warp so needles follow irregular curtains (not a perfect comb)
+        float w1 = fbm(vec3(lon * 1.2, lat * 4.0, t * 0.08));
+        float w2 = fbm(vec3(lon * 2.4 + 1.7, lat * 7.0, t * 0.12 + 2.0));
+        float lonW = lon + (w1 - 0.5) * 0.9 + (w2 - 0.5) * 0.35;
+
+        // Sparse discrete ray families. Active set re-rolls over time so rays
+        // gradually fade out and new ones fade in (staggered epochs per cell).
+        float phase = t * 0.05;
+        float rayCountA = 36.0; // medium needles
+        float rayCountB = 20.0; // coarse beams
+        float rayCountC = 56.0; // fine third family — faster life cycle
+
+        float uA = lonW * rayCountA / 6.2831853 + phase;
+        float uB = lonW * rayCountB / 6.2831853 - phase * 0.7 + 3.1;
+        float uC = lonW * rayCountC / 6.2831853 + phase * 1.4 + 1.7;
+
+        float cellA = floor(uA);
+        float cellB = floor(uB);
+        float cellC = floor(uC);
+        float fA = fract(uA) - 0.5;
+        float fB = fract(uB) - 0.5;
+        float fC = fract(uC) - 0.5;
+
+        float hemi = sign(n.y) * 2.0;
+
+        // Stable per-cell traits (width / height) — not the live gate
+        float hA = hash13(vec3(cellA, 11.0, hemi));
+        float hB = hash13(vec3(cellB, 27.0, hemi + 1.0));
+        float hC = hash13(vec3(cellC, 43.0, hemi + 2.0));
+
+        // Lower sparseLo = more live rays. A/B slower life; C turns over faster.
+        float aliveA = rayGate(cellA, 1.0 + hemi, 7.5, 0.52);
+        float aliveB = rayGate(cellB, 2.0 + hemi, 10.0, 0.58);
+        float aliveC = rayGate(cellC, 3.0 + hemi, 4.0, 0.55);
+
+        // Angular width (cell space); thinner near tips
+        float tipThin = mix(1.0, 0.32, smoothstep(0.35, 0.95, hNorm));
+        float wA = mix(0.06, 0.12, hA) * tipThin;
+        float wB = mix(0.09, 0.18, hB) * tipThin;
+        float wC = mix(0.04, 0.08, hC) * tipThin;
+
+        float colA = exp(-(fA * fA) / (wA * wA)) * aliveA;
+        float colB = exp(-(fB * fB) / (wB * wB)) * aliveB * 0.75;
+        float colC = exp(-(fC * fC) / (wC * wC)) * aliveC * 0.9;
+        // Soft secondary halo — kept subtle so spikes stay translucent
+        float glowA = exp(-(fA * fA) / (wA * wA * 10.0)) * aliveA * 0.10;
+        float glowB = exp(-(fB * fB) / (wB * wB * 10.0)) * aliveB * 0.08;
+        float glowC = exp(-(fC * fC) / (wC * wC * 10.0)) * aliveC * 0.06;
+
+        float column = max(colA, max(colB, colC)) + glowA + glowB + glowC;
+
+        // Per-ray max height — irregular spike lengths (not a comb)
+        float maxHA = mix(0.40, 0.92, hA);
+        float maxHB = mix(0.32, 0.80, hB);
+        float maxHC = mix(0.45, 0.95, hC);
+        float maxH = max(maxHA * aliveA, max(maxHB * aliveB, maxHC * aliveC));
+        maxH = max(maxH, 0.22);
+
+        // Radial envelope: rises from atmosphere, peaks mid, tapers to tip
+        float hScale = hNorm / max(maxH, 0.001);
+        float base = smoothstep(0.0, 0.08, hNorm);
+        float body = 1.0 - smoothstep(0.55, 1.05, hScale);
+        float tip = exp(-pow((hScale - 0.72) * 3.2, 2.0)) * smoothstep(0.4, 0.75, hScale);
+        float heightEnv = base * body * (0.45 + 0.4 * tip + 0.25 * (1.0 - hScale));
+        heightEnv *= 1.0 - smoothstep(maxH * 0.92, maxH, hNorm);
+
+        // Gentle living flicker on top of gate envelopes
+        float flicker = 0.85 + 0.15 * sin(time * (1.8 + hA * 3.0) + hB * 12.0);
+
+        dens = band * column * heightEnv * flicker * 0.55;
+        tipTone = clamp(hNorm * 0.65 + tip * 0.7 + colC * 0.2 + colA * 0.1, 0.0, 1.0);
+    }
+
+    void main() {
+        #include <logdepthbuf_fragment>
+
+        vec3 planetCenter = vPlanetCenterW;
+        float rOuter = length(vPositionW - planetCenter);
+        if (rOuter < 1e-8) {
+            rOuter = max(planetRadius * atmosphereScale, 1e-6);
+        }
+        float rSurface = rOuter / max(atmosphereScale, 1.001);
+        // Start slightly above surface so spikes clear the planet
+        float rInner = rSurface * 1.012;
+
+        vec3 roW = cameraPosition;
+        vec3 rdW = normalize(vPositionW - cameraPosition);
+        vec3 ro = roW - planetCenter;
+
+        float tOuter0, tOuter1;
+        if (!raySphere(ro, rdW, rOuter, tOuter0, tOuter1)) {
+            discard;
+        }
+
+        float tInner0, tInner1;
+        bool hitInner = raySphere(ro, rdW, rInner, tInner0, tInner1);
+
+        float tStart = max(tOuter0, 0.0);
+        float tEnd = tOuter1;
+        if (hitInner && tInner0 > tStart) {
+            tEnd = min(tEnd, tInner0);
+        }
+        if (tEnd <= tStart + 1e-6) {
+            discard;
+        }
+
+        const int MAX_STEPS = 26;
+        float chord = tEnd - tStart;
+        float stepLen = chord / float(MAX_STEPS);
+        float shellThick = max(rOuter - rInner, 1e-6);
+
+        vec3 accumCol = vec3(0.0);
+        float accumA = 0.0;
+        vec3 sunDir = normalize(sunDirection);
+        float tAnim = time * 0.15;
+
+        for (int i = 0; i < MAX_STEPS; i++) {
+            float t = tStart + (float(i) + 0.5) * stepLen;
+            vec3 posW = roW + rdW * t;
+            vec3 localP = worldToLocal(posW, planetCenter);
+            if (dot(localP, localP) < 1e-12) {
+                localP = vLocalPos;
+            }
+
+            float rad = length(posW - planetCenter);
+            float hNorm = clamp((rad - rInner) / shellThick, 0.0, 1.0);
+
+            vec3 n = normalize(localP);
+            float dens = 0.0;
+            float tipTone = 0.0;
+            radialNeedles(n, hNorm, tAnim, dens, tipTone);
+
+            // Night side — spikes only where aurora is visible
+            vec3 Nw = normalize(posW - planetCenter);
+            float day = clamp(dot(Nw, sunDir) * 0.5 + 0.5, 0.0, 1.0);
+            float night = 1.0 - smoothstep(0.18, 0.85, day);
+            dens *= night;
+
+            // O green body → bright lime mid → soft red / hot tip
+            vec3 greenLow  = vec3(0.08, 0.45, 0.22);
+            vec3 greenMain = vec3(0.25, 0.98, 0.42);
+            vec3 limeHot   = vec3(0.75, 1.0, 0.70);
+            vec3 redTip    = vec3(0.85, 0.22, 0.08);
+            vec3 sampleCol = mix(greenLow, greenMain, smoothstep(0.0, 0.4, tipTone));
+            sampleCol = mix(sampleCol, limeHot, smoothstep(0.35, 0.7, tipTone));
+            sampleCol = mix(sampleCol, redTip, smoothstep(0.65, 0.95, tipTone) * 0.55);
+
+            dens *= intensity * 3.2 * (stepLen / shellThick);
+            float a = 1.0 - exp(-dens * 1.4);
+            a *= (1.0 - accumA);
+            accumCol += sampleCol * a;
+            accumA += a;
+
+            if (accumA > 0.94) break;
+        }
+
+        accumA = smoothstep(0.0, 0.05, accumA) * accumA;
+        if (accumA < 0.002) discard;
+
+        vec3 outCol = accumCol / max(accumA, 1e-4);
+        gl_FragColor = vec4(outCol, clamp(accumA, 0.0, 1.0));
     }
 `;
 
@@ -1644,11 +1990,13 @@ const sunFlareFragment = `
         return normalize(vec3(r * cos(a), z, r * sin(a)));
     }
 
+    // Vector-friendly value noise (same lattice as before; mix in vec2/vec3 form)
     float valueNoise(vec3 p) {
         vec3 i = floor(p);
         vec3 f = fract(p);
         vec3 u = f * f * (3.0 - 2.0 * f);
-        float n000 = hash13(i + vec3(0.0, 0.0, 0.0));
+
+        float n000 = hash13(i);
         float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
         float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
         float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
@@ -1656,51 +2004,42 @@ const sunFlareFragment = `
         float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
         float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
         float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
-        float nx00 = mix(n000, n100, u.x);
-        float nx10 = mix(n010, n110, u.x);
-        float nx01 = mix(n001, n101, u.x);
-        float nx11 = mix(n011, n111, u.x);
-        return mix(mix(nx00, nx10, u.y), mix(nx01, nx11, u.y), u.z);
+
+        // Bilinear pairs as vec2, then vec3 mix along z — same result, fewer scalar mixes
+        vec2 x00 = mix(vec2(n000, n001), vec2(n100, n101), u.x);
+        vec2 x10 = mix(vec2(n010, n011), vec2(n110, n111), u.x);
+        vec2 y0  = mix(x00, x10, u.y);
+        return mix(y0.x, y0.y, u.z);
     }
 
+    // 4-octave FBM — fully unrolled (identical weights to a loop)
     float fbm(vec3 p) {
-        float v = 0.0;
-        float a = 0.5;
-        for (int i = 0; i < 4; i++) {
-            v += a * valueNoise(p);
-            p = p * 2.11 + vec3(1.7, 9.2, 3.1);
-            a *= 0.5;
-        }
+        const vec3 k = vec3(1.7, 9.2, 3.1);
+        float v = 0.5 * valueNoise(p);
+        p = p * 2.11 + k;
+        v += 0.25 * valueNoise(p);
+        p = p * 2.11 + k;
+        v += 0.125 * valueNoise(p);
+        p = p * 2.11 + k;
+        v += 0.0625 * valueNoise(p);
         return v;
     }
 
-    // Domain-warped plasma (two-pass warp) — organic filaments
+    // Full domain-warped plasma (visual quality preserved — not simplified)
     float plasmaFBM(vec3 p) {
+        // q.xyz are independent FBM samples (vector assemble of scalar noise)
         vec3 q = vec3(
             fbm(p),
             fbm(p + vec3(5.2, 1.3, 2.8)),
             fbm(p + vec3(1.7, 9.2, 3.4))
         );
+        vec3 rOff = vec3(1.7, 9.2, 3.4);
         vec3 r = vec3(
-            fbm(p + 4.0 * q + vec3(1.7, 9.2, 3.4) + time * 0.05),
+            fbm(p + 4.0 * q + rOff + time * 0.05),
             fbm(p + 4.0 * q + vec3(8.3, 2.8, 1.1) - time * 0.04),
             fbm(p + 4.0 * q + vec3(2.1, 4.5, 7.9) + time * 0.03)
         );
         return fbm(p + 4.0 * r);
-    }
-
-    // Affine inverse for uniform-scale * rotation + translation (sun mesh)
-    vec3 worldToLocal(vec3 worldPos, vec3 center) {
-        vec3 col0 = modelMatrix[0].xyz;
-        vec3 col1 = modelMatrix[1].xyz;
-        vec3 col2 = modelMatrix[2].xyz;
-        float sx = max(length(col0), 1e-8);
-        float sy = max(length(col1), 1e-8);
-        float sz = max(length(col2), 1e-8);
-        mat3 R = mat3(col0 / sx, col1 / sy, col2 / sz);
-        vec3 d = worldPos - center;
-        vec3 rl = transpose(R) * d;
-        return vec3(rl.x / sx, rl.y / sy, rl.z / sz);
     }
 
     bool raySphere(vec3 ro, vec3 rd, float radius, out float t0, out float t1) {
@@ -1714,7 +2053,6 @@ const sunFlareFragment = `
         return true;
     }
 
-    // Soft envelope for flare life-cycle (rise / peak / decay)
     float flareEnvelope(float age) {
         float rise  = smoothstep(0.0, 0.12, age);
         float peak  = 1.0 - smoothstep(0.35, 0.75, age);
@@ -1722,183 +2060,140 @@ const sunFlareFragment = `
         return rise * max(peak, 0.0) * max(decay + 0.35 * (1.0 - age), 0.0);
     }
 
-    // Distance to a circular prominence arc (magnetic loop) above the surface.
-    // foot = unit direction of arc base; halfAngle = angular half-span of feet.
+    // Precompute one active-region slot (once per fragment, not per march step)
+    void initSlot(float si, float t,
+                  out vec3 foot, out float env, out float age, out float seed,
+                  out float halfAng, out float jetLen, out float loopH, out float sprayGate) {
+        float period = 5.5 + hash11(si * 17.13) * 5.0;
+        float phase  = hash11(si * 91.7 + 0.3) * period;
+        // Stagger 4 slots evenly so activity stays continuous with fewer concurrent jets
+        phase += si * (period * 0.25);
+        float timeline = (t + phase) / period;
+        float epoch = floor(timeline);
+        age = fract(timeline);
+        env = flareEnvelope(age);
+        seed = epoch * 19.17 + si * 7.31 + 3.1;
+        foot = sphereDir(seed);
+        halfAng = mix(0.12, 0.22, hash11(seed + 1.1));
+        jetLen = mix(0.35, 0.95, smoothstep(0.05, 0.55, age));
+        loopH = mix(0.2, 0.5, hash11(seed + 2.3));
+        sprayGate = step(0.58, hash11(seed + 4.2));
+        if (env < 0.012) {
+            env = 0.0;
+        }
+    }
+
     float prominenceLoop(vec3 n, float hNorm, vec3 foot, float halfAngle, float loopH) {
-        // Build orthonormal frame with foot as "pole" of the loop plane
         vec3 ref = abs(foot.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
         vec3 e1 = normalize(cross(foot, ref));
         vec3 e2 = cross(foot, e1);
-
-        // Arc lives in plane of e1 × foot (tilted by a small random roll via e2 mix)
         float px = dot(n, e1);
         float py = dot(n, foot);
         float pz = dot(n, e2);
-
-        // Ideal loop: semicircle in (px, py) rising to loopH at midspan
-        float ang = atan(px, py); // 0 at foot apex direction
-        float span = halfAngle;
-        float along = abs(ang) / max(span, 1e-3);
+        float ang = atan(px, py);
+        float along = abs(ang) / max(halfAngle, 1e-3);
         if (along > 1.15) return 1e3;
-
-        // Target height along the arc (parabola-like rise)
         float targetH = loopH * (1.0 - along * along);
-        float hErr = abs(hNorm - targetH);
-        // Lateral thickness of the loop tube
-        float lat = abs(pz);
-        float tube = length(vec2(hErr * 1.8, lat * 2.4));
-        // Fade near footpoints so loops meet the surface softly
+        float tube = length(vec2((hNorm - targetH) * 1.8, abs(pz) * 2.4));
         float footFade = smoothstep(1.15, 0.55, along);
         return tube / max(footFade, 0.15);
     }
 
-    // Soft corona streamer density — subtle, close to the surface
+    // Full-quality single ejecta evaluation (precomputed slot params)
+    void accumulateSlot(
+        vec3 n, float hNorm, float t,
+        vec3 foot, float env, float age, float seed,
+        float halfAng, float jetLen, float loopH, float sprayGate,
+        inout float dens, inout float heat
+    ) {
+        if (env < 0.012) return;
+
+        float align = dot(n, foot);
+        // Early-out far from this jet (tight cones — most samples skip all heavy work)
+        if (align < 0.72) return;
+
+        float cone = smoothstep(0.88, 0.985, align);
+        float hazeCone = smoothstep(0.78, 0.94, align);
+
+        float alongJet = hNorm / max(jetLen, 0.05);
+        float inJetLen = 1.0 - smoothstep(0.82, 1.08, alongJet);
+        float inHazeLen = (1.0 - smoothstep(0.9, 1.2, alongJet)) * smoothstep(0.0, 0.08, hNorm);
+
+        float turb = 0.0;
+        if (max(cone, hazeCone) > 0.01) {
+            vec3 jetP = n * 8.0 + foot * 3.0 + vec3(0.0, 0.0, t * 0.4 + seed);
+            jetP -= foot * (age * 1.4 + hNorm * 2.0);
+            turb = plasmaFBM(jetP);
+        }
+
+        if (cone > 0.01) {
+            float coreAlign = pow(max(align, 0.0), mix(48.0, 22.0, age));
+            float filaments = smoothstep(0.4, 0.88, turb);
+            float spine = exp(-pow((1.0 - coreAlign) * 14.0, 2.0));
+            float sheath = exp(-pow((1.0 - coreAlign) * 5.5, 2.0)) * filaments;
+
+            float jet = (spine * 1.15 + sheath * 0.75) * inJetLen * cone * env;
+            jet *= mix(1.1, 0.55, age);
+            dens += jet * 0.75;
+            heat += jet * mix(1.15, 0.45, alongJet);
+
+            float spray = pow(max(align, 0.0), 14.0) *
+                smoothstep(0.05, 0.35, hNorm) *
+                (1.0 - smoothstep(0.45, 0.85, hNorm)) *
+                smoothstep(0.45, 0.8, turb) * env * sprayGate * 0.35;
+            dens += spray;
+            heat += spray * 0.55;
+        }
+
+        if (hazeCone > 0.01 && env > 0.02) {
+            float angSoft = pow(max(align, 0.0), mix(10.0, 5.5, age));
+            float shimmer = 0.55 + 0.45 * fbm(n * 4.5 + vec3(t * 0.55, seed * 0.1, hNorm * 2.0));
+            float warp = 0.65 + 0.35 * sin(turb * 6.2831 + t * 1.8 + seed);
+            float haze = angSoft * inHazeLen * hazeCone * env * shimmer * warp;
+            haze *= mix(1.0, 0.45, smoothstep(0.2, 0.95, alongJet));
+            dens += haze * 0.28;
+            heat += haze * 0.22;
+        }
+
+        float loopEnv = env * smoothstep(0.08, 0.25, age) * (1.0 - smoothstep(0.7, 0.95, age));
+        if (loopEnv > 0.01 && align > 0.75) {
+            float dLoop = prominenceLoop(n, hNorm, foot, halfAng, loopH);
+            float loop = exp(-dLoop * dLoop * 32.0) * loopEnv;
+            float loopTurb = smoothstep(0.35, 0.85, fbm(n * 12.0 + vec3(t * 0.2, seed, 0.0)));
+            loop *= 0.45 + 0.45 * loopTurb;
+            dens += loop * 0.6;
+            heat += loop * 0.55;
+            float loopHaze = exp(-dLoop * dLoop * 8.0) * loopEnv * 0.18;
+            dens += loopHaze;
+            heat += loopHaze * 0.2;
+        }
+
+        float footGlow = pow(max(align, 0.0), 80.0) * exp(-hNorm * 22.0) * env * 0.75;
+        dens += footGlow;
+        heat += footGlow * 0.9;
+    }
+
     float coronaStreamers(vec3 n, float hNorm, float t) {
         float lat = n.y;
-        vec3 p = n * 5.5 + vec3(0.0, 0.0, t * 0.08);
-        float fil = fbm(p * 1.6);
+        float fil = fbm(n * 5.5 + vec3(0.0, 0.0, t * 0.08));
         float radialPref = smoothstep(0.05, 0.4, hNorm) * (1.0 - smoothstep(0.5, 0.9, hNorm));
         float polar = smoothstep(0.4, 0.92, abs(lat));
         float eq = 1.0 - smoothstep(0.0, 0.5, abs(lat));
         float mask = mix(eq * 0.4, polar, 0.4);
-        float strands = smoothstep(0.5, 0.82, fil);
-        return strands * mask * radialPref * 0.07;
+        return smoothstep(0.5, 0.82, fil) * mask * radialPref * 0.07;
     }
 
-    // Chromospheric base — thin hot sheath sealed to the photosphere (hNorm≈0)
     float chromosphere(float hNorm) {
-        // Soft peak at the surface so limb has no dark gap under ejecta roots
         return exp(-hNorm * 18.0) * 0.18 * (1.0 - smoothstep(0.12, 0.28, hNorm));
     }
 
-    // Evaluate concurrent flare slots (tight footprint, taller ejecta + heat haze)
-    void evaluateFlares(vec3 n, float hNorm, float t, out float dens, out float heat) {
-        dens = 0.0;
-        heat = 0.0;
-
-        float stream = coronaStreamers(n, hNorm, t);
-        dens += stream;
-        heat += stream * 0.25;
-
-        float chromo = chromosphere(hNorm);
-        dens += chromo;
-        heat += chromo * 0.4;
-
-        const int SLOTS = 8;
-        for (int s = 0; s < SLOTS; s++) {
-            float si = float(s);
-            float period = 6.0 + hash11(si * 17.13) * 5.5;
-            float phase  = hash11(si * 91.7) * period;
-            float timeline = (t + phase) / period;
-            float epoch = floor(timeline);
-            float age = fract(timeline);
-
-            float env = flareEnvelope(age);
-            if (env < 0.012) continue;
-
-            float seed = epoch * 19.17 + si * 7.31 + 3.1;
-            vec3 foot = sphereDir(seed);
-            float align = dot(n, foot);
-
-            // Tight core footprint (surface radius stays small)
-            float halfAng = mix(0.12, 0.22, hash11(seed + 1.1));
-            // Haze is wider than the jet core so we early-out only when far from both
-            float nearRegion = smoothstep(0.72, 0.96, align);
-            if (nearRegion < 0.002) continue;
-
-            float cone = smoothstep(0.88, 0.985, align);
-            // Soft angular mask for heat haze (broader than plasma core)
-            float hazeCone = smoothstep(0.78, 0.94, align);
-
-            // How far this eruption reaches (fraction of shell height)
-            float jetLen = mix(0.35, 0.95, smoothstep(0.05, 0.55, age));
-            float alongJet = hNorm / max(jetLen, 0.05);
-            float inJetLen = 1.0 - smoothstep(0.82, 1.08, alongJet);
-            // Haze extends a little past the jet tip and spreads lower
-            float inHazeLen = 1.0 - smoothstep(0.9, 1.2, alongJet);
-            inHazeLen *= smoothstep(0.0, 0.08, hNorm);
-
-            // Shared turbulence field for jet + haze
-            vec3 jetP = n * 8.0 + foot * 3.0 + vec3(0.0, 0.0, t * 0.4 + seed);
-            jetP -= foot * (age * 1.4 + hNorm * 2.0);
-            float turb = 0.0;
-            float needTurb = step(0.01, max(cone, hazeCone) * env);
-            if (needTurb > 0.5) {
-                turb = plasmaFBM(jetP);
-            }
-
-            // --- Hot plasma jet core (tight, bright) ---
-            if (cone > 0.01) {
-                float coreAlign = pow(max(align, 0.0), mix(48.0, 22.0, age));
-                float filaments = smoothstep(0.4, 0.88, turb);
-                float spine = exp(-pow((1.0 - coreAlign) * 14.0, 2.0));
-                float sheath = exp(-pow((1.0 - coreAlign) * 5.5, 2.0)) * filaments;
-
-                float jet = (spine * 1.15 + sheath * 0.75) * inJetLen * cone * env;
-                jet *= mix(1.1, 0.55, age);
-                dens += jet * 0.75;
-                // Hot fireball cores — small but intense
-                heat += jet * mix(1.15, 0.45, alongJet);
-
-                float sprayGate = step(0.58, hash11(seed + 4.2));
-                float spray = pow(max(align, 0.0), 14.0) *
-                    smoothstep(0.05, 0.35, hNorm) *
-                    (1.0 - smoothstep(0.45, 0.85, hNorm)) *
-                    smoothstep(0.45, 0.8, turb) * env * sprayGate * 0.35;
-                dens += spray;
-                heat += spray * 0.55;
-            }
-
-            // --- Heat haze: soft shimmering envelope around the ejecta ---
-            if (hazeCone > 0.01 && env > 0.02) {
-                // Angular falloff wider than the jet; shimmer from low-freq noise
-                float angSoft = pow(max(align, 0.0), mix(10.0, 5.5, age));
-                float shimmer = 0.55 + 0.45 * fbm(n * 4.5 + vec3(t * 0.55, seed * 0.1, hNorm * 2.0));
-                // Domain-warp wobble so the haze "breathes"
-                float warp = 0.65 + 0.35 * sin(turb * 6.2831 + t * 1.8 + seed);
-                float haze = angSoft * inHazeLen * hazeCone * env * shimmer * warp;
-                // Stronger near the jet mid-height, thinner at tip
-                haze *= mix(1.0, 0.45, smoothstep(0.2, 0.95, alongJet));
-                // Low density volume — reads as glow, not solid plasma
-                dens += haze * 0.28;
-                heat += haze * 0.22;
-            }
-
-            // --- Small prominence loops ---
-            float loopH = mix(0.2, 0.5, hash11(seed + 2.3));
-            float loopEnv = env * smoothstep(0.08, 0.25, age) * (1.0 - smoothstep(0.7, 0.95, age));
-            if (loopEnv > 0.01 && align > 0.75) {
-                float dLoop = prominenceLoop(n, hNorm, foot, halfAng, loopH);
-                float loop = exp(-dLoop * dLoop * 32.0) * loopEnv;
-                float loopTurb = smoothstep(0.35, 0.85, fbm(n * 12.0 + vec3(t * 0.2, seed, 0.0)));
-                loop *= 0.45 + 0.45 * loopTurb;
-                dens += loop * 0.6;
-                heat += loop * 0.55;
-
-                // Soft haze halo around the loop
-                float loopHaze = exp(-dLoop * dLoop * 8.0) * loopEnv * 0.18;
-                dens += loopHaze;
-                heat += loopHaze * 0.2;
-            }
-
-            // Footpoint brightening — peaks at photosphere (hNorm≈0) to seal limb
-            float footGlow = pow(max(align, 0.0), 80.0) * exp(-hNorm * 22.0) * env * 0.75;
-            dens += footGlow;
-            heat += footGlow * 0.9;
-        }
-
-        dens = max(dens, 0.0);
-        heat = clamp(heat, 0.0, 2.2);
-    }
-
-    // Blackbody-ish flare color: deep red → orange → gold → white-hot core
     vec3 flareColor(float heat, float hNorm) {
         vec3 deep  = vec3(0.55, 0.05, 0.01);
         vec3 red   = vec3(1.00, 0.18, 0.02);
         vec3 orange= vec3(1.00, 0.45, 0.05);
         vec3 gold  = vec3(1.00, 0.78, 0.25);
         vec3 white = vec3(1.00, 0.96, 0.88);
-        vec3 blueW = vec3(0.85, 0.92, 1.00); // hottest core tip
+        vec3 blueW = vec3(0.85, 0.92, 1.00);
 
         float h = clamp(heat, 0.0, 1.8);
         vec3 c = deep;
@@ -1907,7 +2202,6 @@ const sunFlareFragment = `
         c = mix(c, gold,   smoothstep(0.4, 0.75, h));
         c = mix(c, white,  smoothstep(0.65, 1.2, h));
         c = mix(c, blueW,  smoothstep(1.0, 1.7, h) * 0.6);
-        // Outer plume / haze cools toward amber
         c = mix(c, orange, smoothstep(0.4, 0.95, hNorm) * 0.3 * (1.0 - smoothstep(0.8, 1.4, h)));
         return c;
     }
@@ -1921,8 +2215,6 @@ const sunFlareFragment = `
             rOuter = max(sunRadius * atmosphereScale, 1e-6);
         }
         float rSurface = rOuter / max(atmosphereScale, 1.001);
-        // Tiny overlap under the photosphere so limb has no dark hairline gap
-        // (tessellation / log-depth); samples still stop at the opaque disk.
         float rInner = rSurface * 0.998;
 
         vec3 roW = cameraPosition;
@@ -1939,7 +2231,6 @@ const sunFlareFragment = `
 
         float tStart = max(tOuter0, 0.0);
         float tEnd = tOuter1;
-        // March only the shell exterior (stop when ray hits photosphere sphere)
         if (hitInner && tInner0 > tStart) {
             tEnd = min(tEnd, tInner0);
         }
@@ -1947,10 +2238,32 @@ const sunFlareFragment = `
             discard;
         }
 
+        // ---- Precompute ≤4 active regions once per pixel (not 36×) ----
+        // Same plasma / haze / loop math; only epoch/foot/envelope lifted out of the march.
+        vec3  f0, f1, f2, f3;
+        float e0, e1, e2, e3;
+        float a0, a1, a2, a3;
+        float s0, s1, s2, s3;
+        float ha0, ha1, ha2, ha3;
+        float jl0, jl1, jl2, jl3;
+        float lh0, lh1, lh2, lh3;
+        float sg0, sg1, sg2, sg3;
+        initSlot(0.0, time, f0, e0, a0, s0, ha0, jl0, lh0, sg0);
+        initSlot(1.0, time, f1, e1, a1, s1, ha1, jl1, lh1, sg1);
+        initSlot(2.0, time, f2, e2, a2, s2, ha2, jl2, lh2, sg2);
+        initSlot(3.0, time, f3, e3, a3, s3, ha3, jl3, lh3, sg3);
+
+        // Inverse of uniform scale * rotation — once per pixel
+        vec3 col0 = modelMatrix[0].xyz;
+        vec3 col1 = modelMatrix[1].xyz;
+        vec3 col2 = modelMatrix[2].xyz;
+        float sx = max(length(col0), 1e-8);
+        mat3 Rinv = transpose(mat3(col0 / sx, col1 / sx, col2 / sx));
+        float invS = 1.0 / sx;
+
         const int MAX_STEPS = 36;
         float chord = tEnd - tStart;
         float stepLen = chord / float(MAX_STEPS);
-        // Height 0 = true photosphere (not an elevated inner wall)
         float shellThick = max(rOuter - rSurface, 1e-6);
 
         vec3 accumCol = vec3(0.0);
@@ -1959,7 +2272,7 @@ const sunFlareFragment = `
         for (int i = 0; i < MAX_STEPS; i++) {
             float t = tStart + (float(i) + 0.5) * stepLen;
             vec3 posW = roW + rdW * t;
-            vec3 localP = worldToLocal(posW, sunCenter);
+            vec3 localP = Rinv * (posW - sunCenter) * invS;
             if (dot(localP, localP) < 1e-12) {
                 localP = vLocalPos;
             }
@@ -1970,12 +2283,34 @@ const sunFlareFragment = `
 
             float dens = 0.0;
             float heat = 0.0;
-            evaluateFlares(n, hNorm, time, dens, heat);
 
+            float stream = coronaStreamers(n, hNorm, time);
+            dens += stream;
+            heat += stream * 0.25;
+
+            float chromo = chromosphere(hNorm);
+            dens += chromo;
+            heat += chromo * 0.4;
+
+            // Vectorized align test: skip dead slots without entering accumulate
+            // (4 dots assembled as vec4 — GPU-friendly)
+            vec4 aligns = vec4(dot(n, f0), dot(n, f1), dot(n, f2), dot(n, f3));
+            vec4 envs   = vec4(e0, e1, e2, e3);
+            // Unrolled slot bodies — full plasmaFBM quality when a cone hits
+            if (envs.x > 0.0 && aligns.x > 0.72)
+                accumulateSlot(n, hNorm, time, f0, e0, a0, s0, ha0, jl0, lh0, sg0, dens, heat);
+            if (envs.y > 0.0 && aligns.y > 0.72)
+                accumulateSlot(n, hNorm, time, f1, e1, a1, s1, ha1, jl1, lh1, sg1, dens, heat);
+            if (envs.z > 0.0 && aligns.z > 0.72)
+                accumulateSlot(n, hNorm, time, f2, e2, a2, s2, ha2, jl2, lh2, sg2, dens, heat);
+            if (envs.w > 0.0 && aligns.w > 0.72)
+                accumulateSlot(n, hNorm, time, f3, e3, a3, s3, ha3, jl3, lh3, sg3, dens, heat);
+
+            dens = max(dens, 0.0);
+            heat = clamp(heat, 0.0, 2.2);
             dens *= intensity * 3.8 * (stepLen / shellThick);
 
             vec3 sampleCol = flareColor(heat, hNorm);
-            // Hot cores bloom; haze stays softer
             sampleCol *= 1.0 + heat * 0.55;
 
             float a = 1.0 - exp(-dens * 1.35);
@@ -2011,6 +2346,8 @@ const ss_shaders = {
     ringFragment: ringFragment,
     earthAuroraVertex: earthAuroraVertex,
     earthAuroraFragment: earthAuroraFragment,
+    earthAuroraSpikeVertex: earthAuroraSpikeVertex,
+    earthAuroraSpikeFragment: earthAuroraSpikeFragment,
     auroraVertex: auroraVertex,
     auroraFragment: auroraFragment,
     grsLightningVertex: grsLightningVertex,

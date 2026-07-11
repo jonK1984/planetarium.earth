@@ -173,6 +173,7 @@ const SHADER_OPTION_KEYS = [
     'shaderEarthNight',
     'shaderSoftLighting',
     'shaderRingLighting',
+    'shaderMoonShadows',
     'shaderBloom',
     'shaderCloudMotion',
     'shaderAurora',
@@ -186,11 +187,15 @@ const SHADER_OPTION_LABELS = {
     shaderEarthNight: 'Earth Night Lights',
     shaderSoftLighting: 'Soft Terminator Lighting',
     shaderRingLighting: 'Ring Lighting & Shadows',
+    shaderMoonShadows: 'Moon Shadows on Planets',
     shaderBloom: 'Bloom & Tone Mapping',
     shaderCloudMotion: 'Cloud Motion',
     shaderAurora: 'Planet Auroras (Earth & Jupiter)',
     shaderIoGlow: 'Io Volcanic Glow'
 };
+
+/** Max moons fed to surface shaders for analytic umbra (must match GLSL MAX_MOON_SHADOWS). */
+const MAX_MOON_SHADOWS = 8;
 
 const defaultSettings = {
     pixelRatio: 0.5,
@@ -208,6 +213,7 @@ const defaultSettings = {
     shaderEarthNight: 'ON',
     shaderSoftLighting: 'ON',
     shaderRingLighting: 'ON',
+    shaderMoonShadows: 'ON',
     shaderBloom: 'ON',
     shaderCloudMotion: 'ON',
     shaderAurora: 'ON',
@@ -264,6 +270,7 @@ const settings = {
     shaderEarthNight: getCookie('shaderEarthNight') || defaultSettings.shaderEarthNight,
     shaderSoftLighting: getCookie('shaderSoftLighting') || defaultSettings.shaderSoftLighting,
     shaderRingLighting: getCookie('shaderRingLighting') || defaultSettings.shaderRingLighting,
+    shaderMoonShadows: getCookie('shaderMoonShadows') || defaultSettings.shaderMoonShadows,
     shaderBloom: getCookie('shaderBloom') || defaultSettings.shaderBloom,
     shaderCloudMotion: getCookie('shaderCloudMotion') || defaultSettings.shaderCloudMotion,
     shaderAurora: getCookie('shaderAurora') || defaultSettings.shaderAurora,
@@ -1311,6 +1318,62 @@ function getTexturesForPlanet(oPlanet) {
     return { surfaceTexture, normalMap, specularMap, cloudTexture, ringTexture, bumpTexture, nightMap };
 }
 
+/** Shared moon-umbra uniforms for soft / Earth surface shaders (analytic sphere occlusion). */
+function createMoonShadowUniforms() {
+    const positions = [];
+    for (let i = 0; i < MAX_MOON_SHADOWS; i++) {
+        positions.push(new THREE.Vector3());
+    }
+    return {
+        moonPositions: { value: positions },
+        moonRadii: { value: new Array(MAX_MOON_SHADOWS).fill(0) },
+        moonCount: { value: 0 },
+        enableMoonShadows: { value: isShaderOn('shaderMoonShadows') ? 1.0 : 0.0 }
+    };
+}
+
+/**
+ * Push moon world centers + scaled radii into surface-shader uniforms.
+ * Call after moon local positions are updated for this frame.
+ */
+function updateMoonShadowUniforms(planetObj) {
+    if (!planetObj.advancedUniforms || !planetObj.advancedUniforms.length) return;
+
+    let moonShadowCount = 0;
+    const moonShadowPos = [];
+    const moonShadowRad = [];
+
+    if (isShaderOn('shaderMoonShadows') && planetObj.data.moons && planetObj.data.moons.length) {
+        for (let mi = 0; mi < planetObj.data.moons.length && moonShadowCount < MAX_MOON_SHADOWS; mi++) {
+            const moonData = planetObj.data.moons[mi];
+            const moonObj = getMeshByName(moonData.name);
+            if (!moonObj || !moonObj.mesh) continue;
+            const mPos = new THREE.Vector3();
+            moonObj.mesh.getWorldPosition(mPos);
+            const mScale = getScaleForObject(moonObj).finalPlanetScale || 1;
+            const mRadius = (moonData.radius || moonObj.data.radius || 0) * nHardCodeScaleFactor * mScale;
+            if (mRadius < 1e-12) continue;
+            moonShadowPos.push(mPos);
+            moonShadowRad.push(mRadius);
+            moonShadowCount++;
+        }
+    }
+
+    const enabled = isShaderOn('shaderMoonShadows') ? 1.0 : 0.0;
+    planetObj.advancedUniforms.forEach(u => {
+        if (!u.moonCount || !u.moonPositions || !u.moonRadii) return;
+        u.enableMoonShadows.value = enabled;
+        u.moonCount.value = moonShadowCount;
+        for (let i = 0; i < moonShadowCount; i++) {
+            u.moonPositions.value[i].copy(moonShadowPos[i]);
+            u.moonRadii.value[i] = moonShadowRad[i];
+        }
+        for (let i = moonShadowCount; i < MAX_MOON_SHADOWS; i++) {
+            u.moonRadii.value[i] = 0;
+        }
+    });
+}
+
 function createEarthMaterial(surfaceTexture, normalMap, specularMap, nightMap) {
     const dummy = new THREE.Texture();
     const soft = isShaderOn('shaderSoftLighting') ? 0.35 : 0.05;
@@ -1327,7 +1390,8 @@ function createEarthMaterial(surfaceTexture, normalMap, specularMap, nightMap) {
             hasNightMap: { value: nightMap ? 1.0 : 0.0 },
             hasNormalMap: { value: normalMap ? 1.0 : 0.0 },
             hasSpecularMap: { value: specularMap ? 1.0 : 0.0 },
-            shininess: { value: 48.0 }
+            shininess: { value: 48.0 },
+            ...createMoonShadowUniforms()
         },
         vertexShader: ss_shaders.advancedPlanetVertex,
         fragmentShader: ss_shaders.earthSurfaceFragment
@@ -1350,7 +1414,8 @@ function createSoftPlanetMaterial(oPlanet, surfaceTexture, normalMap, specularMa
             hasSpecularMap: { value: specularMap ? 1.0 : 0.0 },
             shininess: { value: 20.0 },
             emissiveColor: { value: new THREE.Color(ioGlow ? 0xff6622 : 0x000000) },
-            emissiveIntensity: { value: ioGlow ? 0.22 : 0.0 }
+            emissiveIntensity: { value: ioGlow ? 0.22 : 0.0 },
+            ...createMoonShadowUniforms()
         },
         vertexShader: ss_shaders.advancedPlanetVertex,
         fragmentShader: ss_shaders.softPlanetFragment
@@ -1362,15 +1427,16 @@ function createMaterialFromTextures( oPlanet, surfaceTexture, normalMap, specula
     let material = null;
     const normalScale = 1;
 
-    // Advanced Earth path (day/night + soft lighting)
+    // Advanced Earth path (day/night + soft lighting + moon umbra)
     if (oPlanet.name === 'Earth' && surfaceTexture && settings.areShadersEnabled === 'ON' &&
-        (isShaderOn('shaderEarthNight') || isShaderOn('shaderSoftLighting'))) {
+        (isShaderOn('shaderEarthNight') || isShaderOn('shaderSoftLighting') || isShaderOn('shaderMoonShadows'))) {
         return createEarthMaterial(surfaceTexture, normalMap, specularMap, nightMap);
     }
 
-    // Soft terminator / Io glow for textured bodies
+    // Soft terminator / Io glow / moon umbra for textured bodies
     if (surfaceTexture && settings.areShadersEnabled === 'ON' &&
-        (isShaderOn('shaderSoftLighting') || (oPlanet.name === 'Io' && isShaderOn('shaderIoGlow')))) {
+        (isShaderOn('shaderSoftLighting') || isShaderOn('shaderMoonShadows') ||
+         (oPlanet.name === 'Io' && isShaderOn('shaderIoGlow')))) {
         return createSoftPlanetMaterial(oPlanet, surfaceTexture, normalMap, specularMap);
     }
 
@@ -1439,11 +1505,14 @@ function createAuroraMesh(celestialBody) {
     const isJupiter = celestialBody.name === 'Jupiter';
     const isEarth = celestialBody.name === 'Earth';
 
-    // --- Earth: smooth low-freq bulge + per-pixel crisp ribbon mask ---
+    // --- Earth: ribbon shell + volumetric radial spike rays ---
     if (isEarth) {
-        // Higher tessellation so vertex bulge stays smooth; detail is fragment-driven
-        const geo = new THREE.SphereGeometry(surfaceR * 1.008, 192, 192);
-        const mat = new THREE.ShaderMaterial({
+        const group = new THREE.Group();
+        group.name = 'aurora';
+
+        // Ribbons: higher tessellation so vertex bulge stays smooth; detail is fragment-driven
+        const ribbonGeo = new THREE.SphereGeometry(surfaceR * 1.008, 192, 192);
+        const ribbonMat = new THREE.ShaderMaterial({
             uniforms: {
                 time: { value: 0.0 },
                 sunDirection: { value: new THREE.Vector3(1, 0, 0) },
@@ -1458,11 +1527,38 @@ function createAuroraMesh(celestialBody) {
             blending: THREE.AdditiveBlending,
             side: THREE.FrontSide
         });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.name = 'aurora';
-        mesh.renderOrder = 3;
-        mesh.frustumCulled = true;
-        return mesh;
+        const ribbons = new THREE.Mesh(ribbonGeo, ribbonMat);
+        ribbons.name = 'auroraRibbons';
+        ribbons.renderOrder = 3;
+        ribbons.frustumCulled = true;
+        group.add(ribbons);
+
+        // Spikes: tall volumetric shell — field-aligned needles shoot outward along normals
+        const spikeScale = 1.085;
+        const spikeGeo = new THREE.SphereGeometry(surfaceR * spikeScale, 128, 128);
+        const spikeMat = new THREE.ShaderMaterial({
+            uniforms: {
+                time: { value: 0.0 },
+                sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+                intensity: { value: 0.28 },
+                planetRadius: { value: surfaceR },
+                atmosphereScale: { value: spikeScale }
+            },
+            vertexShader: ss_shaders.earthAuroraSpikeVertex,
+            fragmentShader: ss_shaders.earthAuroraSpikeFragment,
+            transparent: true,
+            depthWrite: false,
+            depthTest: true,
+            blending: THREE.AdditiveBlending,
+            side: THREE.DoubleSide
+        });
+        const spikes = new THREE.Mesh(spikeGeo, spikeMat);
+        spikes.name = 'auroraSpikes';
+        spikes.renderOrder = 4;
+        spikes.frustumCulled = true;
+        group.add(spikes);
+
+        return group;
     }
 
     // --- Jupiter: volumetric ray-marched polar swirl (unchanged) ---
@@ -1827,7 +1923,7 @@ function getSunMaterial(surfaceTexture, celestialBody)
 
 function getStarGlowMesh( starBody)
 {
-    // Base geometry at 1.3× radius; corona ON scales to 1.55× for live toggles
+    // Base geometry at 1.3× radius; corona ON scales to 1.08× (size only, no shader/material changes)
     const glowRadius = starBody.radius * nHardCodeScaleFactor * 1.3;
     const glowGeometry = new THREE.SphereGeometry(glowRadius, 48, 48);
     const coronaOn = isShaderOn('shaderSunCorona');
@@ -1849,7 +1945,7 @@ function getStarGlowMesh( starBody)
     const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
     glowMesh.name = 'sunGlow';
     if (coronaOn) {
-        glowMesh.scale.setScalar(1.55 / 1.3);
+        glowMesh.scale.setScalar(1.08 / 1.3);
     }
     return glowMesh;
 }
@@ -1905,6 +2001,7 @@ function createSunFlareMesh(starBody) {
     mesh.frustumCulled = true;
     return mesh;
 }
+
 
 function createSimpleCelestialBody(celestialBody) {
 
@@ -1986,12 +2083,16 @@ function createSimpleCelestialBody(celestialBody) {
     }
 
     // Planet auroras — child of surface mesh so group child indices stay stable
-    // Earth: vertex-displaced green/red curtains; Jupiter: volumetric polar blue swirl
+    // Earth returns a Group (ribbons + spikes); Jupiter is a single mesh.
     if ((celestialBody.name === 'Earth' || celestialBody.name === 'Jupiter') && isShaderOn('shaderAurora')) {
-        const auroraMesh = createAuroraMesh(celestialBody);
-        if (auroraMesh.material.uniforms) advancedUniforms.push(auroraMesh.material.uniforms);
-        auroraMesh.visible = atmosphereEffectsVisible;
-        simpleCelestialMesh.add(auroraMesh);
+        const auroraRoot = createAuroraMesh(celestialBody);
+        auroraRoot.traverse(child => {
+            if (child.isMesh && child.material && child.material.uniforms) {
+                advancedUniforms.push(child.material.uniforms);
+            }
+        });
+        auroraRoot.visible = atmosphereEffectsVisible;
+        simpleCelestialMesh.add(auroraRoot);
     }
 
     // Jupiter Great Red Spot lightning — independent of aurora (always on when body exists)
@@ -2137,7 +2238,8 @@ async function initializeCelestialBodies() {
 
 
                 initializeRotationalDynamics(moonObject);
-                createTrailLine(moonObject);
+                // Parent trail under planet group so it shares the orbit-line frame
+                createTrailLine(moonObject, bodyObject.mesh);
 
                 celestialObjects.push(moonObject);
             }
@@ -2199,7 +2301,14 @@ function setCelestialBodyTilt(mesh, bodyData) {
 }*/
 
 
-function createTrailLine( objToTrail )
+/**
+ * Create a motion trail for a body.
+ * @param {object} objToTrail - celestial object ({ data, parent, ... })
+ * @param {THREE.Object3D|null} parentObject3D - optional parent for the trail line.
+ *   Moons should pass the planet group so trails stay planet-relative (aligned with orbit lines).
+ *   Planets/asteroids leave null (scene root / heliocentric).
+ */
+function createTrailLine( objToTrail, parentObject3D = null )
 {
     //Create Trail Lines
     let materialSelect = trailMaterial;
@@ -2241,7 +2350,15 @@ function createTrailLine( objToTrail )
     const trailLine = new THREE.Line(geometry, materialSelect);
     trailLine.visible = moonTrailsVisible; // Hidden initially
     trailLine.frustumCulled = false;
-    scene.add(trailLine);
+    trailLine.name = `${objToTrail.data.name}_trail`;
+
+    // Moons: parent under planet group (same frame as moon orbit lines).
+    // Planets/asteroids: scene root (heliocentric).
+    if (parentObject3D) {
+        parentObject3D.add(trailLine);
+    } else {
+        scene.add(trailLine);
+    }
 
     // Set initial visibility based on type
     if (objToTrail.data.type === "asteroid") {
@@ -4575,31 +4692,44 @@ function animate() {
 
             }
 
-            obj.data.moons.forEach((moon, i) => {
+            obj.data.moons.forEach((moon) => {
                 const moonObj = getMeshByName(moon.name);
-                if( moonObj ) //Ensure the moonObj is actually loaded
-                {
-                    //const worldScale = new THREE.Vector3();
-                    //const indxOffset = (obj.hasAtmosphere ? 1 : 0) + (obj.hasRing ? 1 : 0) + 1;
-                    const moonMesh = obj.mesh.children[i * 2 + (obj.hasAtmosphere ? 1 : 0) + (obj.hasRing ? 1 : 0) + 1];
-                    const {finalPlanetScale, finalOrbitScale} = getScaleForObject(getMeshByName(moon.name));
-                    const {pos: moonPos, elements: moonElements} = getPosition(moon.orbitalElements, obj.data.mass, simulationTime, moon.type, finalOrbitScale);                   
-                    const moonRotationAngle = moonObj.rotationalOmega * simulationTime;
-                    
-                        //moon rotation
-                        if(moonMesh)
-                        {
-                            moonMesh.position.copy(moonPos);
-                            moonMesh.quaternion.copy(moonObj.initialQuaternion);  // Apply same tilt as parent (adjust if needed)
-                            moonMesh.rotateY(moonRotationAngle);
-                        }
-                    
-                    //Store the current position so we don't have to calculate it again
-                    moon.currentPos = moonPos;
-                    moon.currentElements = moonElements;
-                    
-                }
+                // Use the moon object's own group (not fragile children[i*2] indices).
+                // Planet group children also include orbit lines and planet-relative trails.
+                if (!moonObj || !moonObj.mesh) return;
+
+                const moonMesh = moonObj.mesh;
+                const { finalOrbitScale } = getScaleForObject(moonObj);
+                const { pos: moonPos, elements: moonElements } = getPosition(
+                    moon.orbitalElements,
+                    obj.data.mass,
+                    simulationTime,
+                    moon.type,
+                    finalOrbitScale
+                );
+                const moonRotationAngle = moonObj.rotationalOmega * simulationTime;
+
+                moonMesh.position.copy(moonPos);
+                moonMesh.quaternion.copy(moonObj.initialQuaternion);
+                moonMesh.rotateY(moonRotationAngle);
+
+                moon.currentPos = moonPos;
+                moon.currentElements = moonElements;
             });
+
+            // Moon umbra uniforms after moon positions are set (same analytic sphere occlusion as rings)
+            if (obj.advancedUniforms && obj.advancedUniforms.length &&
+                isShaderOn('shaderMoonShadows') && obj.data.moons && obj.data.moons.length) {
+                updateMoonShadowUniforms(obj);
+            } else if (obj.advancedUniforms && obj.advancedUniforms.length) {
+                // Clear / disable when feature off so stale umbrae don't linger
+                obj.advancedUniforms.forEach(u => {
+                    if (u.moonCount) {
+                        u.enableMoonShadows.value = 0.0;
+                        u.moonCount.value = 0;
+                    }
+                });
+            }
         } else {
             //Don't process moon submeshes
            
@@ -4664,28 +4794,31 @@ function animate() {
         });
     }
 
-    // Moon trails
+    // Moon trails — planet-relative only (same frame as moon orbit lines).
+    // Trail is parented under the planet group; do not add past heliocentric planet positions
+    // or the path becomes a solar-system spiral instead of an arc of the moon ellipse.
     if (!moonOrbitsVisible) {
         celestialObjects.forEach(obj => {
             if (obj.data.type === "moon" && obj.trailLine) {
                 const positions = obj.trailLine.geometry.attributes.position.array;
                 const opacities = obj.trailLine.geometry.attributes.opacity.array;
-                const {finalPlanetScale, finalOrbitScale} = getScaleForObject(obj);
+                const { finalOrbitScale } = getScaleForObject(obj);
 
                 for (let i = 0; i < N_TRAIL_POINTS; i++) {
                     const timeOffset = i * obj.trailDeltaT;
                     const pastTime = simulationTime - timeOffset;
-                    // Use the same past epoch for parent and moon so the trail is a real historical path
-                    const {pos: planetPosPast, elements: planetElementsPast} = getPosition(obj.parent.orbitalElements, SUN_MASS, pastTime, "planet", 1);
+                    // Same scale/Kepler path as live moon mesh & orbit ellipse (baked into vertices)
+                    const { pos: moonRelPast } = getPosition(
+                        obj.data.orbitalElements,
+                        obj.parent.mass,
+                        pastTime,
+                        obj.data.type,
+                        finalOrbitScale
+                    );
 
-                    const { pos: moonPosRelativePast,  elements: moonElementsRelativePast} = getPosition(obj.data.orbitalElements, obj.parent.mass, pastTime, obj.data.type, finalOrbitScale);
-                    //const moonPosRelativePast = pos2;
-
-                    const absolutePos = planetPosPast.clone().add(moonPosRelativePast);
-
-                    positions[i * 3] = absolutePos.x;
-                    positions[i * 3 + 1] = absolutePos.y;
-                    positions[i * 3 + 2] = absolutePos.z;
+                    positions[i * 3] = moonRelPast.x;
+                    positions[i * 3 + 1] = moonRelPast.y;
+                    positions[i * 3 + 2] = moonRelPast.z;
                     opacities[i] = 1 - (i / (N_TRAIL_POINTS - 1));
                 }
                 obj.trailLine.geometry.attributes.position.needsUpdate = true;
@@ -5222,6 +5355,12 @@ function disposeMaterialKeepTextures(material) {
 
 function disposeMeshDeep(mesh) {
     if (!mesh) return;
+    // Recurse so Groups (e.g. Earth aurora ribbons + spikes) free all GPU resources
+    while (mesh.children && mesh.children.length) {
+        const child = mesh.children[0];
+        mesh.remove(child);
+        disposeMeshDeep(child);
+    }
     if (mesh.geometry) mesh.geometry.dispose();
     disposeMaterialKeepTextures(mesh.material);
 }
@@ -5323,7 +5462,7 @@ function syncSunCoronaLive(obj) {
     const coronaOn = isShaderOn('shaderSunCorona');
 
     if (glow) {
-        glow.scale.setScalar(coronaOn ? (1.55 / 1.3) : 1.0);
+        glow.scale.setScalar(coronaOn ? (1.08 / 1.3) : 1.0);
         if (glow.material && glow.material.uniforms && glow.material.uniforms.u_color) {
             glow.material.uniforms.u_color.value.set(coronaOn ? 0xffb040 : 0xffa500);
         }
