@@ -430,7 +430,8 @@ const sunGlowFragment = `
         #include <logdepthbuf_fragment>
 
         float raw_intensity = max(dot(vPosition, vNormalView), 0.);
-        float intensity = pow(raw_intensity, 4.);
+        // Middle ground: visible soft rim without a large balloon
+        float intensity = pow(raw_intensity, 5.) * 0.18;
         vec4 color = vec4(u_color, intensity);
         gl_FragColor = color;
     }
@@ -466,7 +467,8 @@ const sunFresnelFragment = `
         float fresnelTerm_outer = 1.0 + dot(normalize(vPosition), normalize(vNormalView));
         fresnelTerm_outer = pow(fresnelTerm_outer, 2.0);
         
-        float fresnelTerm = fresnelTerm_inner + fresnelTerm_outer;
+        // Same terms; moderate attenuation (middle ground visibility)
+        float fresnelTerm = (fresnelTerm_inner + fresnelTerm_outer) * 0.22;
         gl_FragColor = vec4(u_color, 0.7) * fresnelTerm;
     }
 `;

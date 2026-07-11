@@ -1923,8 +1923,8 @@ function getSunMaterial(surfaceTexture, celestialBody)
 
 function getStarGlowMesh( starBody)
 {
-    // Base geometry at 1.3× radius; corona ON scales to 1.08× (size only, no shader/material changes)
-    const glowRadius = starBody.radius * nHardCodeScaleFactor * 1.3;
+    // Subtle shell past the photosphere (middle ground: not balloon, not invisible)
+    const glowRadius = starBody.radius * nHardCodeScaleFactor * 1.03;
     const glowGeometry = new THREE.SphereGeometry(glowRadius, 48, 48);
     const coronaOn = isShaderOn('shaderSunCorona');
 
@@ -1944,14 +1944,13 @@ function getStarGlowMesh( starBody)
 
     const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
     glowMesh.name = 'sunGlow';
-    if (coronaOn) {
-        glowMesh.scale.setScalar(1.08 / 1.3);
-    }
+    // Size stays at 1.03×; corona only warms the color (no scale-up)
     return glowMesh;
 }
 
 function getStarFresnelMesh(starBody) {
-    const radius = starBody.radius * nHardCodeScaleFactor * 1.08;
+    // Match glow shell; size only (shader formula unchanged)
+    const radius = starBody.radius * nHardCodeScaleFactor * 1.03;
     const geo = new THREE.SphereGeometry(radius, 48, 48);
     const mat = new THREE.ShaderMaterial({
         vertexShader: ss_shaders.sunGlowVertex,
@@ -5462,7 +5461,8 @@ function syncSunCoronaLive(obj) {
     const coronaOn = isShaderOn('shaderSunCorona');
 
     if (glow) {
-        glow.scale.setScalar(coronaOn ? (1.08 / 1.3) : 1.0);
+        // Keep tight 1.03× shell; corona only adjusts glow color
+        glow.scale.setScalar(1.0);
         if (glow.material && glow.material.uniforms && glow.material.uniforms.u_color) {
             glow.material.uniforms.u_color.value.set(coronaOn ? 0xffb040 : 0xffa500);
         }
