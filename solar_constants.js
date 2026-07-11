@@ -732,7 +732,7 @@ const bodies = [
         {
           name: "Triton",
           type: "moon",
-          mass: 1.08e-7, // Solar masses
+          mass: 1.08e-8, // Solar masses (~2.14e22 kg; was 1.08e-7, 10× too high vs density/g)
           radius: 0.00000905, // AU
           color: 0x808080, // Gray
           texture: 'triton_texture.png',

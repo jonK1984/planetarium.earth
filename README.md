@@ -6,6 +6,7 @@ A browser-based planetarium built with [Three.js](https://threejs.org/). Explore
 
 **Author:** Jon Kakaley ([@JonKakaley](https://x.com/JonKakaley))  
 **Repository:** [github.com/jonK1984/planetarium.earth](https://github.com/jonK1984/planetarium.earth)
+
 **CURRENLTY HOSTED:** [http://planetarium.earth/](http://planetarium.earth/)
 ---
 

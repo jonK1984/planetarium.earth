@@ -19,6 +19,7 @@
 
 			this.object = object;
 			this.domElement = domElement; // API
+			this.enabled = true; // When false, ignore input and skip update (orbit mode)
 			this.movementSpeedMultiplier = 5;
 			this.movementSpeed = 1.0;
 			this.rollSpeed = 0.005;
@@ -54,6 +55,8 @@
 			this.rotationVector = new THREE.Vector3( 0, 0, 0 );
 
 			this.keydown = function ( event ) {
+
+				if ( scope.enabled === false ) return;
 
 				if ( event.altKey ) {
 
@@ -187,6 +190,8 @@
 
 			this.keyup = function ( event ) {
 
+				if ( scope.enabled === false ) return;
+
 				switch ( event.code ) {
 
 					case 'ShiftLeft':
@@ -259,6 +264,8 @@
 
 			this.mousedown = function ( event ) {
 
+				if ( scope.enabled === false ) return;
+
 				if ( this.dragToLook ) {
 
 					this.mouseStatus ++;
@@ -285,6 +292,8 @@
 
 			this.mousemove = function ( event ) {
 
+				if ( scope.enabled === false ) return;
+
 				if ( ! this.dragToLook || this.mouseStatus > 0 ) {
 
 					const container = this.getContainerDimensions();
@@ -299,6 +308,8 @@
 			};
 
 			this.mouseup = function ( event ) {
+
+				if ( scope.enabled === false ) return;
 
 				if ( this.dragToLook ) {
 
@@ -328,6 +339,8 @@
 			};
 
 			this.update = function ( delta ) {
+
+				if ( scope.enabled === false ) return;
 
 				const moveMult = delta * scope.movementSpeed;
 				const rotMult = delta * scope.rollSpeed;

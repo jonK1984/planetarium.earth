@@ -252,7 +252,21 @@ function setTexturePath(size) {
 
 
 
-// Get WebGL context and check for anisotropic filtering extension
+// Probe WebGL 2 before creating the renderer so logarithmicDepthBuffer matches capability.
+// (WebGL2RenderingContext also inherits from WebGLRenderingContext, so instanceof WebGLRenderingContext is not a WebGL1 test.)
+function supportsWebGL2() {
+    try {
+        const probe = document.createElement('canvas');
+        return !!(probe.getContext('webgl2'));
+    } catch (e) {
+        return false;
+    }
+}
+if (settings.useLogDepthBuffer === 'ON' && !supportsWebGL2()) {
+    console.warn('Logarithmic depth buffer requires WebGL 2.0, but only WebGL 1.0 is available.');
+    settings.useLogDepthBuffer = 'OFF';
+}
+
 // Initialize renderer with settings
 const renderer = new THREE.WebGLRenderer({
     canvas: document.getElementById('canvas'),
@@ -262,13 +276,6 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio * settings.pixelRatio);
 const gl = renderer.getContext();
-
-if (settings.useLogDepthBuffer === 'ON' && gl instanceof WebGLRenderingContext) {
-    console.warn('Logarithmic depth buffer requires WebGL 2.0, but only WebGL 1.0 is available.');
-
-    // Optionally disable the setting or alert the user
-    settings.useLogDepthBuffer === 'OFF'
-}
 
 const isLogDepthBuffer = settings.useLogDepthBuffer === 'ON';
 
@@ -344,6 +351,7 @@ else
 
 const orbitControls = new THREE.OrbitControls(camera, renderer.domElement);
 const fpsControls = new THREE.TieFighterControls(camera, renderer.domElement);
+fpsControls.enabled = false; // Start in orbital mode; enabled only when flight mode is on
 fpsControls.addEventListener('change', updateThrottleIndicator);
 
 let lastThrottle = 0; // Store last throttle value for orbit mode
@@ -356,8 +364,6 @@ fpsControls.rollSpeed = .7;
 fpsControls.pitchSpeed = 3;
 fpsControls.dragToLook = true;
 fpsControls.autoForward = false;
-fpsControls.enabled = false;   // Disabled by default
-
 
 
 
@@ -878,7 +884,8 @@ function updateProgress(message) {
             setTimeout(() => {
                 document.getElementById('loadingPopup').style.display = 'none';
                 updatePlanetScales();
-                animate();
+                // Do not call animate() here — the loop is started once at the end of init.
+                // A second start would run two rAF loops and advance simulation ~2× too fast.
             }, 500);
         }
     }, 0);
@@ -1494,7 +1501,7 @@ async function initializeCelestialBodies() {
             orbitLine.visible = asteroidOrbitsVisible;
             asteroidOrbitLines.push(orbitLine);
             scene.add(orbitLine);
-            bodyObject.orbitLine =  asteroidOrbitLines[-1];
+            bodyObject.orbitLine = orbitLine;
         }
         else
         {
@@ -1502,7 +1509,7 @@ async function initializeCelestialBodies() {
             orbitLine.visible = planetOrbitsVisible;
             planetOrbitLines.push(orbitLine);
             scene.add(orbitLine);
-            bodyObject.orbitLine =  planetOrbitLines[-1];
+            bodyObject.orbitLine = orbitLine;
         }
 
         createTrailLine(bodyObject);
@@ -1529,7 +1536,7 @@ async function initializeCelestialBodies() {
 
                 //Create the moon's orbit line
                 const moonOrbitLine = createOrbitLine(moon.orbitalElements, body.mass, 0xffff00);
-                moonOrbitLine.visible = planetOrbitsVisible;
+                moonOrbitLine.visible = moonOrbitsVisible;
                 moonOrbitLines.push(moonOrbitLine);
 
                 //Add the moon's Orbit Line to the bodyObject's mesh group
@@ -2470,7 +2477,8 @@ function onMouseMove(event) {
             }
             else
             {
-                focusOnCelestialBody(obj);
+                // focusOnCelestialBody expects a name string, not the body object
+                focusOnCelestialBody(obj.data.name);
             }
         } else {
             popup.style.display = 'none';
@@ -3659,7 +3667,7 @@ function getCameraDistances()
   let unitLabel;
   switch (unitSystem) {
       case 0: // kg, km, s
-          posText = `(${camPos.x / simulationScale * AU_TO_KM.toFixed(1)}, ${camPos.y / simulationScale * AU_TO_KM.toFixed(1)}, ${camPos.z / simulationScale * AU_TO_KM.toFixed(1)}) km`;
+          posText = `(${(camPos.x / simulationScale * AU_TO_KM).toFixed(1)}, ${(camPos.y / simulationScale * AU_TO_KM).toFixed(1)}, ${(camPos.z / simulationScale * AU_TO_KM).toFixed(1)}) km`;
           sunDistText = `${(distanceToSun / simulationScale * AU_TO_KM / 1e6).toFixed(2)}M km`;
           if (focusedPlanet) {
               const planetPos = focusedPlanet.mesh instanceof THREE.Group ? focusedPlanet.mesh.children[0].position : focusedPlanet.mesh.position;
@@ -3698,7 +3706,7 @@ function getCameraDistances()
           unitLabel = "m";
           break;
       case 2: // AU, M☉, yr
-          posText = `(${camPos.x / simulationScale.toFixed(2)}, ${camPos.y / simulationScale.toFixed(2)}, ${camPos.z / simulationScale.toFixed(2)}) AU`;
+          posText = `(${(camPos.x / simulationScale).toFixed(2)}, ${(camPos.y / simulationScale).toFixed(2)}, ${(camPos.z / simulationScale).toFixed(2)}) AU`;
           sunDistText = `${(distanceToSun / simulationScale).toFixed(2)} AU`;
           if (focusedPlanet) {
               const planetPos = focusedPlanet.mesh instanceof THREE.Group ? focusedPlanet.mesh.children[0].position : focusedPlanet.mesh.position;
@@ -4039,9 +4047,8 @@ function animate() {
                 for (let i = 0; i < N_TRAIL_POINTS; i++) {
                     const timeOffset = i * obj.trailDeltaT;
                     const pastTime = simulationTime - timeOffset;
-                    const planetMomentInTime = simulationTime;
-                    const {pos: planetPosPast, elements: planetElementsPast} = getPosition(obj.parent.orbitalElements, SUN_MASS, planetMomentInTime, "planet", 1);
-                    //planetPosPast = pos;
+                    // Use the same past epoch for parent and moon so the trail is a real historical path
+                    const {pos: planetPosPast, elements: planetElementsPast} = getPosition(obj.parent.orbitalElements, SUN_MASS, pastTime, "planet", 1);
 
                     const { pos: moonPosRelativePast,  elements: moonElementsRelativePast} = getPosition(obj.data.orbitalElements, obj.parent.mass, pastTime, obj.data.type, finalOrbitScale);
                     //const moonPosRelativePast = pos2;
@@ -5203,6 +5210,7 @@ function getAllCelestialNames() {
 const celestialNames = getAllCelestialNames();
 const planetSearch = document.getElementById('planetSearch');
 const searchDropdown = document.getElementById('searchDropdown');
+const planetSearchContainer = document.getElementById('planetSearchContainer');
 
 // Function to populate the dropdown based on input
 function updateDropdown(searchValue) {
@@ -5766,7 +5774,7 @@ restartWithGettingStartedButton.addEventListener('click', () => {
 });
 
 // Adjust position on window resize for asteroids
-window.addEventListener('resize', adjustSubmenuPosition(asteroidSubmenu));
+window.addEventListener('resize', () => adjustSubmenuPosition(asteroidSubmenu));
 
 // Append the remaining non-asteroid bodies after Asteroids
 for (let i = marsIndex + 1; i < bodyContainers.length; i++) {
