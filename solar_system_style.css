@@ -863,6 +863,27 @@ h4 { margin: 10px 0 5px 0; }
     overflow: visible; /* Allow advanced shader panel to slide out */
 }
 
+#settingsPopup .settings-drag-handle {
+    margin: 0 0 12px 0;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none; /* allow pointer drag on touch */
+}
+
+#settingsPopup .settings-drag-handle:active,
+#settingsPopup.dragging .settings-drag-handle {
+    cursor: grabbing;
+}
+
+#settingsPopup.dragging {
+    user-select: none;
+}
+
+#settingsPopup .settings-actions {
+    margin-bottom: 12px;
+}
+
 /* Row with ON/OFF + slide-out arrow for Advanced Shaders */
 .settings-group-row {
     display: flex;
@@ -956,6 +977,29 @@ h4 { margin: 10px 0 5px 0; }
     .advanced-shader-panel.open {
         transform: translateY(0);
     }
+}
+
+/* Section headings / divider between live vs reload settings */
+.settings-section-heading {
+    font-family: 'Roboto', sans-serif;
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: #bbbbbb;
+    margin: 0 0 10px 0;
+    letter-spacing: 0.02em;
+}
+
+.settings-section-divider {
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.35);
+    margin: 18px 0 14px;
+}
+
+#settingsContent .settings-hint {
+    font-size: 0.85rem;
+    color: #aaaaaa;
+    display: block;
+    margin-top: 6px;
 }
 
 /* Add spacing between settings groups and style labels */

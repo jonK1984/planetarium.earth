@@ -63,6 +63,16 @@ CHANGE LOG
 ----------
 ################################################################################
 2026-07-11
+S-00005
+  1. [.] solar_system.js — live-apply render settings (pixel ratio, anisotropic, advanced shaders/bloom) without page reload; store body textures for material rebuild; selective reload only for texture size / AA / complex meshes / log depth
+  2. [.] solar_system.js — Render Settings Apply no longer closes popup on live apply; Cancel renamed flow to Done (close only); reload path still full reloads
+  3. [.] solar_system.js — draggable settings popup via title handle; advanced shader slide-out stays attached as child
+  4. [.] solar_system.html — settings popup: Done button (was Cancel), drag-handle title, actions layout
+  5. [.] solar_system_style.css — section headings/divider for Immediate vs Requires reload; drag-handle and settings actions styles
+  6. [.] VERSION_TRACKING.txt — log live settings / popup UX session (S-00005)
+################################################################################
+################################################################################
+2026-07-11
 S-00004
   1. [.] VERSION_TRACKING.txt — complete session log for advanced-shader work (S-00002–S-00004)
   2. [.] README.md — document advanced shader master toggle, slide-out panel, per-effect options, assets, and render settings

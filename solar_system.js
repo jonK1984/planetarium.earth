@@ -394,11 +394,21 @@ function createBloomPipeline() {
         sceneRT, brightRT, blurRT,
         brightMat, blurMat, combineMat,
         brightScene, blurScene, combineScene, orthoCam,
+        quadGeo,
         resize(nw, nh, npr) {
             this.sceneRT.setSize(nw * npr, nh * npr);
             this.brightRT.setSize(nw * npr * 0.5, nh * npr * 0.5);
             this.blurRT.setSize(nw * npr * 0.5, nh * npr * 0.5);
             this.blurMat.uniforms.resolution.value.set(nw * npr * 0.5, nh * npr * 0.5);
+        },
+        dispose() {
+            this.sceneRT.dispose();
+            this.brightRT.dispose();
+            this.blurRT.dispose();
+            this.brightMat.dispose();
+            this.blurMat.dispose();
+            this.combineMat.dispose();
+            this.quadGeo.dispose();
         },
         render(mainScene, mainCamera) {
             // 1) Scene → sceneRT
@@ -1611,13 +1621,13 @@ function getSunMaterial(surfaceTexture, celestialBody)
 
 function getStarGlowMesh( starBody)
 {
-    // Soft outer glow (always present for stars; stronger with corona option)
-    const glowScale = isShaderOn('shaderSunCorona') ? 1.55 : 1.3;
-    const glowRadius = starBody.radius * nHardCodeScaleFactor * glowScale;
+    // Base geometry at 1.3× radius; corona ON scales to 1.55× for live toggles
+    const glowRadius = starBody.radius * nHardCodeScaleFactor * 1.3;
     const glowGeometry = new THREE.SphereGeometry(glowRadius, 48, 48);
+    const coronaOn = isShaderOn('shaderSunCorona');
 
     const glowUniforms = {
-        u_color: { value: new THREE.Color(isShaderOn('shaderSunCorona') ? 0xffb040 : 0xffa500) }
+        u_color: { value: new THREE.Color(coronaOn ? 0xffb040 : 0xffa500) }
     };
 
     const glowMaterial = new THREE.ShaderMaterial({
@@ -1632,6 +1642,9 @@ function getStarGlowMesh( starBody)
 
     const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
     glowMesh.name = 'sunGlow';
+    if (coronaOn) {
+        glowMesh.scale.setScalar(1.55 / 1.3);
+    }
     return glowMesh;
 }
 
@@ -1783,7 +1796,17 @@ function createSimpleCelestialBody(celestialBody) {
         data: celestialBody,
         hasAtmosphere: hasAtmosphere,
         hasRing: hasRing,
-        advancedUniforms: advancedUniforms
+        advancedUniforms: advancedUniforms,
+        // Keep texture refs so live shader toggles can rebuild materials without reload
+        textures: {
+            surfaceTexture,
+            normalMap,
+            specularMap,
+            cloudTexture,
+            ringTexture,
+            bumpTexture,
+            nightMap
+        }
     };
 
     return celestialObject;
@@ -4918,9 +4941,245 @@ function bindSettingsGroupClicks(root) {
     });
 }
 
+/** Settings that can be applied without a page reload. */
+const LIVE_RENDER_SETTING_KEYS = [
+    'pixelRatio',
+    'anisotropicFiltering',
+    'areShadersEnabled',
+    ...SHADER_OPTION_KEYS
+];
+
+/** Settings that require a full page reload to take effect. */
+const RELOAD_RENDER_SETTING_KEYS = [
+    'textureSize',
+    'antiAliasing',
+    'useComplexMeshes',
+    'useLogDepthBuffer'
+];
+
+function disposeMaterialKeepTextures(material) {
+    if (material && material.dispose) material.dispose();
+}
+
+function disposeMeshDeep(mesh) {
+    if (!mesh) return;
+    if (mesh.geometry) mesh.geometry.dispose();
+    disposeMaterialKeepTextures(mesh.material);
+}
+
+function setTextureAnisotropy(texture, enabled, maxAnisotropy) {
+    if (!texture || !texture.isTexture) return;
+    if (enabled && maxAnisotropy) {
+        texture.anisotropy = Math.min(16, maxAnisotropy);
+        if (texture.minFilter !== THREE.NearestFilter) {
+            texture.minFilter = THREE.LinearMipMapLinearFilter;
+            texture.magFilter = THREE.LinearFilter;
+        }
+    } else {
+        texture.anisotropy = 1;
+    }
+    texture.needsUpdate = true;
+}
+
+function applyAnisotropicFilteringLive() {
+    const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+    const enabled = settings.anisotropicFiltering === 'ON';
+
+    function visitMaterial(mat) {
+        if (!mat) return;
+        const mats = Array.isArray(mat) ? mat : [mat];
+        mats.forEach(m => {
+            ['map', 'normalMap', 'specularMap', 'bumpMap', 'emissiveMap', 'alphaMap', 'lightMap', 'aoMap']
+                .forEach(key => setTextureAnisotropy(m[key], enabled, maxAnisotropy));
+            if (m.uniforms) {
+                Object.keys(m.uniforms).forEach(ukey => {
+                    setTextureAnisotropy(m.uniforms[ukey] && m.uniforms[ukey].value, enabled, maxAnisotropy);
+                });
+            }
+        });
+    }
+
+    scene.traverse(obj => {
+        if (obj.material) visitMaterial(obj.material);
+    });
+    if (typeof backlight_texture !== 'undefined') {
+        setTextureAnisotropy(backlight_texture, enabled, maxAnisotropy);
+    }
+}
+
+function applyBloomLive() {
+    if (isShaderOn('shaderBloom')) {
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.05;
+        if (THREE.sRGBEncoding !== undefined) {
+            renderer.outputEncoding = THREE.sRGBEncoding;
+        }
+        if (!bloomPipeline) {
+            bloomPipeline = createBloomPipeline();
+        } else {
+            bloomPipeline.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
+        }
+    } else {
+        renderer.toneMapping = THREE.NoToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        if (bloomPipeline) {
+            bloomPipeline.dispose();
+            bloomPipeline = null;
+        }
+    }
+}
+
+function createPhongRingMaterial(ringTexture) {
+    return new THREE.MeshPhongMaterial({
+        map: ringTexture,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.95,
+        emissive: 0x111111,
+        emissiveIntensity: 0.3,
+        alphaTest: 0.05,
+        depthTest: true,
+        blending: THREE.NormalBlending,
+        depthWrite: false
+    });
+}
+
+function rebuildAdvancedUniforms(obj) {
+    const list = [];
+    if (!obj.mesh) return;
+    obj.mesh.traverse(child => {
+        if (!child.isMesh || !child.material || !child.material.uniforms) return;
+        const u = child.material.uniforms;
+        if (u.sunDirection || u.ringMap || u.dayMap || u.softTerminator || u.intensity) {
+            list.push(u);
+        }
+    });
+    obj.advancedUniforms = list;
+}
+
+function syncSunCoronaLive(obj) {
+    if (!obj.data || obj.data.type !== 'star') return;
+    const group = obj.mesh;
+    const glow = group.getObjectByName('sunGlow');
+    const coronaOn = isShaderOn('shaderSunCorona');
+
+    if (glow) {
+        glow.scale.setScalar(coronaOn ? (1.55 / 1.3) : 1.0);
+        if (glow.material && glow.material.uniforms && glow.material.uniforms.u_color) {
+            glow.material.uniforms.u_color.value.set(coronaOn ? 0xffb040 : 0xffa500);
+        }
+    }
+
+    let fresnel = group.getObjectByName('sunFresnel');
+    if (coronaOn && !fresnel) {
+        group.add(getStarFresnelMesh(obj.data));
+    } else if (!coronaOn && fresnel) {
+        group.remove(fresnel);
+        disposeMeshDeep(fresnel);
+    }
+}
+
+function syncAuroraLive(obj) {
+    if (!obj.data || obj.data.name !== 'Earth') return;
+    const planetMesh = obj.mesh.getObjectByName(obj.data.name) || obj.mesh.children[0];
+    if (!planetMesh || !planetMesh.isMesh) return;
+
+    let aurora = planetMesh.getObjectByName('aurora');
+    if (isShaderOn('shaderAurora')) {
+        if (!aurora) {
+            const auroraMesh = createAuroraMesh(obj.data);
+            const surfaceR = obj.data.radius * nHardCodeScaleFactor;
+            auroraMesh.scale.setScalar(1.035);
+            auroraMesh.geometry.dispose();
+            auroraMesh.geometry = new THREE.SphereGeometry(surfaceR, 64, 64);
+            planetMesh.add(auroraMesh);
+        }
+    } else if (aurora) {
+        planetMesh.remove(aurora);
+        disposeMeshDeep(aurora);
+    }
+}
+
+function syncRingMaterialLive(obj) {
+    if (!obj.textures || !obj.textures.ringTexture) return;
+    const ringMesh = obj.mesh.getObjectByName('ring');
+    if (!ringMesh || !ringMesh.isMesh) return;
+
+    const ringTexture = obj.textures.ringTexture;
+    const oldMat = ringMesh.material;
+    let ringMaterial;
+    if (isShaderOn('shaderRingLighting')) {
+        const planetRadiusScaled = obj.data.radius * nHardCodeScaleFactor;
+        ringMaterial = createRingShaderMaterial(ringTexture, planetRadiusScaled);
+    } else {
+        ringMaterial = createPhongRingMaterial(ringTexture);
+    }
+    ringMesh.material = ringMaterial;
+    disposeMaterialKeepTextures(oldMat);
+}
+
+function syncSurfaceMaterialLive(obj) {
+    if (!obj.textures) return; // complex-mesh bodies have no tier textures
+    const planetMesh = obj.mesh.getObjectByName(obj.data.name) || obj.mesh.children[0];
+    if (!planetMesh || !planetMesh.isMesh) return;
+
+    const t = obj.textures;
+    const oldMat = planetMesh.material;
+    let newMat;
+
+    if (obj.data.type === 'star') {
+        if (oldMat && oldMat.uniforms && oldMat.uniforms.shader_enable) {
+            oldMat.uniforms.shader_enable.value = isShaderOn('shaderSunTurbulence');
+            return;
+        }
+        newMat = getSunMaterial(t.surfaceTexture, obj.data);
+    } else {
+        newMat = createMaterialFromTextures(
+            obj.data,
+            t.surfaceTexture,
+            t.normalMap,
+            t.specularMap,
+            t.cloudTexture,
+            t.nightMap
+        );
+    }
+
+    planetMesh.material = newMat;
+    disposeMaterialKeepTextures(oldMat);
+}
+
+function syncCelestialObjectShadersLive(obj) {
+    if (!obj || !obj.mesh || !obj.data) return;
+    // Complex meshes keep GLB materials; only corona-free / bloom-level effects apply globally
+    if (obj.textures) {
+        syncSurfaceMaterialLive(obj);
+        syncRingMaterialLive(obj);
+        syncAuroraLive(obj);
+        syncSunCoronaLive(obj);
+        rebuildAdvancedUniforms(obj);
+    } else if (obj.data.type === 'star') {
+        syncSunCoronaLive(obj);
+    }
+}
+
+function applyLiveRenderSettings() {
+    renderer.setPixelRatio(window.devicePixelRatio * settings.pixelRatio);
+    applyAnisotropicFilteringLive();
+    applyBloomLive();
+
+    if (typeof celestialObjects !== 'undefined' && celestialObjects.length) {
+        celestialObjects.forEach(syncCelestialObjectShadersLive);
+    }
+
+    if (bloomPipeline) {
+        bloomPipeline.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
+    }
+}
+
 function generateSettingsHTML() {
     const settingsContent = document.getElementById('settingsContent');
     settingsContent.innerHTML = `
+        <p class="settings-section-heading">Immediate (no reload)</p>
         <div>
             <label>Pixel Ratio:</label>
             <div class="settings-group" data-setting="pixelRatio">
@@ -4940,12 +5199,19 @@ function generateSettingsHTML() {
             </div>
         </div>
         <div>
-            <label>Anti Aliasing:</label>
-            <div class="settings-group" data-setting="antiAliasing">
-                <button class="settings-button" data-value="ON">ON</button>
-                <button class="settings-button" data-value="OFF">OFF</button>
+            <label>Enable Advanced Shaders:</label>
+            <div class="settings-group-row">
+                <div class="settings-group" data-setting="areShadersEnabled">
+                    <button class="settings-button" data-value="ON">ON</button>
+                    <button class="settings-button" data-value="OFF">OFF</button>
+                </div>
+                <button type="button" id="toggleShaderPanel" class="shader-panel-arrow" title="Advanced shader options">▶</button>
             </div>
         </div>
+
+        <hr class="settings-section-divider" />
+        <p class="settings-section-heading">Requires page reload</p>
+
         <div>
             <label>Texture Size:</label>
             <div class="settings-group" data-setting="textureSize">
@@ -4957,13 +5223,10 @@ function generateSettingsHTML() {
             </div>
         </div>
         <div>
-            <label>Enable Advanced Shaders:</label>
-            <div class="settings-group-row">
-                <div class="settings-group" data-setting="areShadersEnabled">
-                    <button class="settings-button" data-value="ON">ON</button>
-                    <button class="settings-button" data-value="OFF">OFF</button>
-                </div>
-                <button type="button" id="toggleShaderPanel" class="shader-panel-arrow" title="Advanced shader options">▶</button>
+            <label>Anti Aliasing:</label>
+            <div class="settings-group" data-setting="antiAliasing">
+                <button class="settings-button" data-value="ON">ON</button>
+                <button class="settings-button" data-value="OFF">OFF</button>
             </div>
         </div>
         <div>
@@ -4979,7 +5242,7 @@ function generateSettingsHTML() {
                 <button class="settings-button" data-value="ON">ON</button>
                 <button class="settings-button" data-value="OFF">OFF</button>
             </div>
-            <label>[recommended, requires WebGL 2.0] </label>
+            <label class="settings-hint">[recommended, requires WebGL 2.0]</label>
         </div>
     `;
 
@@ -5037,6 +5300,75 @@ function getSelectedSetting(settingKey) {
     return el ? el.getAttribute('data-value') : null;
 }
 
+/** Make the Render Settings popup draggable; advanced shader panel is a child and stays attached. */
+function setupSettingsPopupDragging() {
+    const popup = document.getElementById('settingsPopup');
+    if (!popup || popup.dataset.dragBound === '1') return;
+    popup.dataset.dragBound = '1';
+
+    const handle = popup.querySelector('.settings-drag-handle') || popup.querySelector('h3');
+    if (!handle) return;
+
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let originLeft = 0;
+    let originTop = 0;
+
+    function pinPopupToPixels() {
+        const rect = popup.getBoundingClientRect();
+        popup.style.transform = 'none';
+        popup.style.left = `${rect.left}px`;
+        popup.style.top = `${rect.top}px`;
+        return rect;
+    }
+
+    handle.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        const rect = pinPopupToPixels();
+        dragging = true;
+        popup.classList.add('dragging');
+        startX = e.clientX;
+        startY = e.clientY;
+        originLeft = rect.left;
+        originTop = rect.top;
+        try {
+            handle.setPointerCapture(e.pointerId);
+        } catch (_) { /* ignore */ }
+        e.preventDefault();
+    });
+
+    handle.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        // Keep a bit of the popup on-screen
+        const minVisible = 40;
+        const maxLeft = window.innerWidth - minVisible;
+        const maxTop = window.innerHeight - minVisible;
+        const nextLeft = Math.min(maxLeft, Math.max(0, originLeft + dx));
+        const nextTop = Math.min(maxTop, Math.max(0, originTop + dy));
+        popup.style.left = `${nextLeft}px`;
+        popup.style.top = `${nextTop}px`;
+    });
+
+    function endDrag(e) {
+        if (!dragging) return;
+        dragging = false;
+        popup.classList.remove('dragging');
+        if (e && e.pointerId != null) {
+            try {
+                handle.releasePointerCapture(e.pointerId);
+            } catch (_) { /* ignore */ }
+        }
+    }
+
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+}
+
+setupSettingsPopupDragging();
+
 document.getElementById('openSettings').addEventListener('click', () => {
     generateSettingsHTML();
     loadSettings();
@@ -5044,37 +5376,63 @@ document.getElementById('openSettings').addEventListener('click', () => {
 });
 
 document.getElementById('applySettings').addEventListener('click', () => {
-    const pixelRatio = getSelectedSetting('pixelRatio');
-    const anisotropicFiltering = getSelectedSetting('anisotropicFiltering');
-    const antiAliasing = getSelectedSetting('antiAliasing');
-    const textureSize = getSelectedSetting('textureSize');
-    const areShadersEnabled = getSelectedSetting('areShadersEnabled');
-    const useComplexMeshes = getSelectedSetting('useComplexMeshes');
-    const useLogDepthBuffer = getSelectedSetting('useLogDepthBuffer');
-
-    setCookie('pixelRatio', pixelRatio, 30);
-    setCookie('anisotropicFiltering', anisotropicFiltering, 30);
-    setCookie('antiAliasing', antiAliasing, 30);
-    setCookie('textureSize', textureSize, 30);
-    setCookie('areShadersEnabled', areShadersEnabled, 30);
-    setCookie('useComplexMeshes', useComplexMeshes, 30);
-    setCookie('useLogDepthBuffer', useLogDepthBuffer, 30);
+    const selected = {
+        pixelRatio: getSelectedSetting('pixelRatio'),
+        anisotropicFiltering: getSelectedSetting('anisotropicFiltering'),
+        antiAliasing: getSelectedSetting('antiAliasing'),
+        textureSize: getSelectedSetting('textureSize'),
+        areShadersEnabled: getSelectedSetting('areShadersEnabled'),
+        useComplexMeshes: getSelectedSetting('useComplexMeshes'),
+        useLogDepthBuffer: getSelectedSetting('useLogDepthBuffer')
+    };
 
     SHADER_OPTION_KEYS.forEach(key => {
-        const value = getSelectedSetting(key) || defaultSettings[key];
-        setCookie(key, value, 30);
+        selected[key] = getSelectedSetting(key) || defaultSettings[key];
     });
 
-    location.reload(); // Reload to apply new settings
+    const needsReload =
+        selected.textureSize !== settings.textureSize ||
+        selected.antiAliasing !== settings.antiAliasing ||
+        selected.useComplexMeshes !== settings.useComplexMeshes ||
+        selected.useLogDepthBuffer !== settings.useLogDepthBuffer;
+
+    // Persist all render settings (live + reload)
+    setCookie('pixelRatio', selected.pixelRatio, 30);
+    setCookie('anisotropicFiltering', selected.anisotropicFiltering, 30);
+    setCookie('antiAliasing', selected.antiAliasing, 30);
+    setCookie('textureSize', selected.textureSize, 30);
+    setCookie('areShadersEnabled', selected.areShadersEnabled, 30);
+    setCookie('useComplexMeshes', selected.useComplexMeshes, 30);
+    setCookie('useLogDepthBuffer', selected.useLogDepthBuffer, 30);
+    SHADER_OPTION_KEYS.forEach(key => setCookie(key, selected[key], 30));
+
+    if (needsReload) {
+        location.reload();
+        return;
+    }
+
+    // Live-apply path: update in-memory settings and scene immediately; keep popup open
+    settings.pixelRatio = parseFloat(selected.pixelRatio) || defaultSettings.pixelRatio;
+    settings.anisotropicFiltering = selected.anisotropicFiltering || defaultSettings.anisotropicFiltering;
+    settings.areShadersEnabled = selected.areShadersEnabled || defaultSettings.areShadersEnabled;
+    SHADER_OPTION_KEYS.forEach(key => {
+        settings[key] = selected[key] || defaultSettings[key];
+    });
+
+    applyLiveRenderSettings();
 });
 
-document.getElementById('cancelSettings').addEventListener('click', () => {
+function closeSettingsPopup() {
     const panel = document.getElementById('advancedShaderPanel');
     if (panel) {
         panel.classList.remove('open');
         panel.setAttribute('aria-hidden', 'true');
     }
     document.getElementById('settingsPopup').style.display = 'none';
+}
+
+document.getElementById('doneSettings').addEventListener('click', () => {
+    closeSettingsPopup();
 });
 
 // Physics Submenu Event Listeners
