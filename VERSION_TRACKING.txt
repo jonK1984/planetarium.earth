@@ -1,0 +1,70 @@
+VERSION TRACKING — planetarium.Earth
+====================================
+
+Session IDs (S-#####) are globally unique across the entire repo (never reset).
+Change numbers (N) restart at 1 within each session entry.
+The newest entry always appears first.
+
+
+MAINTENANCE INSTRUCTIONS
+------------------------
+When you make a meaningful change (application code, assets, or project docs):
+
+  1. Add a new block at the TOP of the CHANGE LOG section (below this header)
+     in this file (./VERSION_TRACKING.txt).
+  2. First line of the block: the date (YYYY-MM-DD).
+  3. Second line: the next session ID — scan the CHANGE LOG for the highest
+     existing S-##### and increment by 1 (first entry ever: S-00001).
+  4. Below the session ID, add one or more numbered change lines:
+       N. [directory] file — brief description of what changed
+     Use 1, 2, 3, etc. within the session. Tag each line with the directory
+     that owns the file, for example:
+       [.]              root application / docs
+       [js]             libraries and controls under js/
+       [mesh]           3D models under mesh/
+       [images]         UI photos under images/
+       [textures_lo]    (or textures_md / textures_hi / textures_mx)
+       [getting_started] onboarding media
+  5. Keep descriptions brief (one line each) but specific enough to be useful
+     months later — mention file names and the gist of the change.
+  6. Wrap each entry in ##### separators (see format below).
+  7. Do NOT edit or renumber older entries.
+
+Also update when relevant:
+  - FILE_MANIFEST.txt in the repo root — if files are added/removed,
+    CDN URLs change, special functions change, or roles change significantly.
+
+
+ENTRY FORMAT
+------------
+################################################################################
+YYYY-MM-DD
+S-#####
+  1. [directory] file — description of change
+  2. [directory] file — another change from the same session (if applicable)
+################################################################################
+
+Reference syntax: S-##### #N  (e.g. S-00005 #2 = session 5, change 2).
+
+
+SUGGESTED PRACTICES
+-------------------
+  - One session block per work session; multiple numbered items if needed.
+  - Cross-directory work: single session entry with multiple tagged lines (do
+    not create duplicate session blocks for the same work session).
+  - Reference specific files.
+  - For bug fixes, note symptom + fix.
+  - For breaking changes, say so explicitly.
+  - Git commits and this file complement each other: git shows diffs; this file
+    shows intent in plain language.
+
+
+CHANGE LOG
+----------
+################################################################################
+2026-07-11
+S-00001
+  1. [.] README.md — initial project README (overview, run, features, layout)
+  2. [.] VERSION_TRACKING.txt — session-based change log with maintenance rules
+  3. [.] FILE_MANIFEST.txt — initial root file/directory inventory and roles
+################################################################################

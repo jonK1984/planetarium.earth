@@ -1,0 +1,229 @@
+FILE MANIFEST — planetarium.Earth
+=================================
+
+Purpose
+-------
+Inventory of project files and directories with a short role for each.
+Use this to orient new contributors and to see what is loaded at runtime.
+
+Maintenance
+-----------
+Update this file when files are added or removed, CDN / external URLs change,
+special entry points change, or a file’s role changes significantly.
+Record the corresponding work in VERSION_TRACKING.txt (session block).
+
+Last aligned with: S-00001 (2026-07-11)
+
+
+================================================================================
+ROOT — application entry and source
+================================================================================
+
+solar_system.html
+  Entry page and UI shell. Canvas, menus (Track / Video / Simulation / Physics /
+  Help), search, time controls, popups (settings, constants, equations, about,
+  getting started, loading). Loads CSS, Google Fonts (Roboto), and all runtime
+  scripts. Title: "Planetarium: Solar System Simulation".
+
+solar_system.js
+  Main application logic: WebGL renderer setup, scene, bodies, time integration,
+  camera modes, UI event wiring, cookie-based settings, texture path selection,
+  focus/search, trails, orbits, asteroid sprites. Primary runtime module.
+
+solar_system_style.css
+  Layout and styling for menus, popups, controls, info panels, and overlays.
+
+solar_constants.js
+  Celestial body catalog and simulation constants (G, Kepler precision, trail
+  length). Per-body mass, radius, textures, orbital elements (a, e, i, Ω, ω, M0),
+  moons, density, surface gravity. Includes planets, major moons, dwarfs, and
+  named asteroids.
+
+solar_descriptions.js
+  Narrative HTML descriptions keyed by body name for the Description panel.
+
+solar_science_info.js
+  Science / physical property tables (atmosphere composition, temperatures,
+  pressures, etc.) and molecule name lookup for display.
+
+solar_image_list.js
+  Lists of photograph filenames under images/ used by the Photos panel.
+
+shaders.js
+  Custom GLSL materials: sun emissive / corona / glow / fresnel; orbit trail
+  materials (planet, moon, asteroid), including logarithmic-depth variants.
+  Exports ss_shaders registry used by solar_system.js.
+
+solar_system_populate_track.js
+  Helpers for Track submenu population and orbital / equatorial plane meshes
+  when focusing a body. Present in the tree but NOT currently included by
+  solar_system.html (logic may live elsewhere or be re-enabled later).
+
+scratch.js
+  Development / scratch copy of track-plane helpers. NOT loaded by production
+  HTML. Do not treat as a runtime dependency.
+
+favicon.ico
+  Browser tab icon.
+
+README.md
+  Project documentation: overview, features, run instructions, layout, credits.
+
+VERSION_TRACKING.txt
+  Session-based change log (S-#####) and maintenance rules for this repo.
+
+FILE_MANIFEST.txt
+  This inventory.
+
+.gitignore
+  Ignore rules: __pycache__/, *.log, OSPRI/
+
+
+================================================================================
+js/ — vendored libraries and camera controls
+================================================================================
+
+js/three.min.js
+  Three.js runtime (minified). Core 3D engine.
+
+js/OrbitControls.js
+  Mouse/touch orbital camera (rotate, pan, zoom) around a focus target.
+
+js/PointerLockControls.js
+  Pointer-lock style controls (used with flight / free-look paths).
+
+js/TieFighterControls.js
+  First-person flight controls: pitch/yaw/roll, throttle (incl. reverse),
+  movement speed multiplier. Used in flight camera mode.
+
+js/OBJLoader.js
+  Three.js loader for Wavefront .obj meshes.
+
+js/MTLLoader.js
+  Three.js loader for .mtl materials paired with OBJ meshes.
+
+js/DDSLoader.js
+  Loader for DDS compressed textures (asteroid texture packs).
+
+js/GLTFLoader.js
+  Loader for glTF / GLB models (primary asteroid mesh format).
+
+js/DRACOLoader.js
+  Draco mesh-compression decoder wiring for GLTFLoader.
+
+js/crosshair.js
+  On-screen crosshair for flight mode focus aiming.
+
+js/tex-mml-chtml.js
+  Math typesetting (TeX/MathML → HTML-CSS) for the Equations popup.
+
+js/draco/
+js/draco/gltf/
+  Draco WASM/JS decoder and encoder builds (default + glTF-specific paths).
+  Required when loading Draco-compressed glTF assets. See js/draco/README.md.
+
+
+================================================================================
+getting_started/ — onboarding media
+================================================================================
+
+Used by the Getting Started popup slides:
+
+  click_planets.png
+  click_search_planets.png
+  render_settings.png
+  mouse_controls.mov
+  adjust_time.mov
+
+
+================================================================================
+images/ — UI photograph gallery (~94 files)
+================================================================================
+
+Still images (jpg/jpeg/png/gif/webp) shown in body info Photos panels.
+Filenames are referenced via solar_image_list.js and related UI code.
+Examples: earth_1.jpeg, jupiter_1.jpeg, europa_1.jpeg, vesta_1.png, etc.
+Not used as 3D surface textures (those live under textures_*).
+
+
+================================================================================
+mesh/ — 3D models for small bodies
+================================================================================
+
+mesh/
+  GLB (and some OBJ/GLTF) models for asteroids and irregular moons, e.g.:
+  bacchus, castalia, ceres, dactyl, deimos, eros, gaspra, geographos, golevka,
+  ida, juno, kleopatra, ky26, mathilde, pallas, phobos, toutatis, vesta.
+  Optional intermediate formats: bacchus.gltf + bacchus.bin; deimos.obj /
+  phobos.obj; random asteroid preview PNGs.
+
+mesh/asteroid/
+  Source OBJ/MTL pairs and related assets for individual asteroids (bacchus,
+  castalia, ceres, dactyl, eros, gaspra, geographos, golevka, ida, juno,
+  kleopatra, ky26, mathilde, pallas, toutatis, vesta) plus random_asteroid_*.obj.
+
+
+================================================================================
+textures_lo/ | textures_md/ | textures_hi/ | textures_mx/
+  Surface and effect maps by quality tier
+================================================================================
+
+Parallel directory trees selected at runtime by Render Settings
+(solar_system.js: TEXTURE_PATH_LOW / MEDIUM / HIGH / MAX → textures_lo, _md,
+_hi, _mx).
+
+Typical contents per tier:
+  - Planet / moon / dwarf surface maps (*_texture.jpg|png)
+  - Atmosphere overlays (atmosphere_*_texture.*)
+  - Ring maps (jupiter/saturn/uranus/neptune_ring_*)
+  - Normal / specular / bump maps (normal_map_*, specular_map_earth, etc.)
+  - Sun textures, star / milky-way backdrops
+  - textures_*/asteroid/ — DDS (and some PNG) asteroid surface packs
+
+Approximate file counts (excluding OS junk): lo ~88, md ~89, hi ~86, mx ~87.
+
+
+================================================================================
+EXTERNAL / CDN DEPENDENCIES (not vendored)
+================================================================================
+
+https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap
+  Google Fonts — Roboto (linked from solar_system.html).
+
+Core Three.js and loaders are vendored under js/ (no CDN for three.min.js).
+
+
+================================================================================
+RUNTIME LOAD ORDER (from solar_system.html)
+================================================================================
+
+  1. js/tex-mml-chtml.js
+  2. js/three.min.js
+  3. js/OrbitControls.js
+  4. js/OBJLoader.js
+  5. js/MTLLoader.js
+  6. js/DDSLoader.js
+  7. js/GLTFLoader.js
+  8. js/DRACOLoader.js
+  9. js/TieFighterControls.js
+ 10. js/PointerLockControls.js
+ 11. solar_constants.js
+ 12. solar_descriptions.js
+ 13. solar_image_list.js
+ 14. solar_science_info.js
+ 15. js/crosshair.js
+ 16. shaders.js
+ 17. solar_system.js
+
+NOT loaded: solar_system_populate_track.js, scratch.js
+
+
+================================================================================
+SPECIAL BEHAVIORS (high level)
+================================================================================
+
+  - Two-body Keplerian motion (not N-body gravity).
+  - Settings and video toggles persisted in browser cookies.
+  - Texture quality switches entire textures_* directory via TEXTURE_PATH.
+  - Optional complex meshes (GLB/OBJ) for selected small bodies when enabled.
+  - Logarithmic depth buffer optional for large scale ranges.
