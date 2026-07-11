@@ -63,6 +63,30 @@ CHANGE LOG
 ----------
 ################################################################################
 2026-07-11
+S-00021
+  1. [.] shaders.js — sun flares: remove black limb ring (rInner at photosphere, hNorm from surface, chromosphere/footpoints seal gap)
+################################################################################
+################################################################################
+2026-07-11
+S-00020
+  1. [.] shaders.js / solar_system.js — flares: taller ejecta (1.22×R), 8 regions, heat-haze envelope around jets; keep tight surface footprint + small hot cores
+################################################################################
+################################################################################
+2026-07-11
+S-00019
+  1. [.] shaders.js / solar_system.js — solar flares scaled way down: shell 1.12×R, tighter cones, shorter jets/loops, lower density (no meltdown look)
+################################################################################
+################################################################################
+2026-07-11
+S-00018
+  1. [.] shaders.js — volumetric ray-marched solar flares (CME plasma ejecta, prominence loops, corona streamers, domain-warped FBM)
+  2. [.] solar_system.js — createSunFlareMesh + shaderSunFlares toggle; live sync; co-rotates with photosphere; 0-key bare view
+  3. [.] README.md — document Sun Plasma Flares & Ejecta advanced shader option
+  4. [.] FILE_MANIFEST.txt — note solar plasma flare shaders in shaders.js role
+  5. [.] solar_system.html — 0-key help text includes sun flares in bare view
+################################################################################
+################################################################################
+2026-07-11
 S-00017
   1. [.] solar_system.js — fix load hang: declare atmosphereEffectsVisible before createSimpleCelestialBody (TDZ ReferenceError)
 ################################################################################

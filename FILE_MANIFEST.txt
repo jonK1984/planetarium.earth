@@ -53,12 +53,13 @@ solar_image_list.js
   Lists of photograph filenames under images/ used by the Photos panel.
 
 shaders.js
-  Custom GLSL materials: sun emissive / corona / glow / fresnel; orbit trails
-  (planet, moon, asteroid); advanced planet (soft lighting), Earth day/night,
-  ring lighting + planet umbra, volumetric ray-marched aurora (Earth ribbons /
-  spikes + Jupiter polar ice swirl), and fullscreen bloom extract/blur/combine.
-  Logarithmic-depth variants where needed. Exports ss_shaders registry used by
-  solar_system.js. Requires WebGL 2.0.
+  Custom GLSL materials: sun emissive / corona / glow / fresnel; volumetric
+  ray-marched solar plasma flares (CME ejecta, prominence loops, streamers);
+  orbit trails (planet, moon, asteroid); advanced planet (soft lighting), Earth
+  day/night, ring lighting + planet umbra, volumetric ray-marched aurora (Earth
+  ribbons / spikes + Jupiter polar ice swirl), and fullscreen bloom
+  extract/blur/combine. Logarithmic-depth variants where needed. Exports
+  ss_shaders registry used by solar_system.js. Requires WebGL 2.0.
 
 solar_system_populate_track.js
   Helpers for Track submenu population and orbital / equatorial plane meshes

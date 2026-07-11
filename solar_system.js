@@ -169,6 +169,7 @@ let updateConstants = true;
 const SHADER_OPTION_KEYS = [
     'shaderSunTurbulence',
     'shaderSunCorona',
+    'shaderSunFlares',
     'shaderEarthNight',
     'shaderSoftLighting',
     'shaderRingLighting',
@@ -181,6 +182,7 @@ const SHADER_OPTION_KEYS = [
 const SHADER_OPTION_LABELS = {
     shaderSunTurbulence: 'Sun Surface Turbulence',
     shaderSunCorona: 'Sun Corona & Fresnel',
+    shaderSunFlares: 'Sun Plasma Flares & Ejecta',
     shaderEarthNight: 'Earth Night Lights',
     shaderSoftLighting: 'Soft Terminator Lighting',
     shaderRingLighting: 'Ring Lighting & Shadows',
@@ -202,6 +204,7 @@ const defaultSettings = {
     // Discrete advanced-shader sub-options (defaults ON for first master-ON experience)
     shaderSunTurbulence: 'ON',
     shaderSunCorona: 'ON',
+    shaderSunFlares: 'ON',
     shaderEarthNight: 'ON',
     shaderSoftLighting: 'ON',
     shaderRingLighting: 'ON',
@@ -257,6 +260,7 @@ const settings = {
     useLogDepthBuffer: getCookie('useLogDepthBuffer') || defaultSettings.useLogDepthBuffer,  // Add new setting
     shaderSunTurbulence: getCookie('shaderSunTurbulence') || defaultSettings.shaderSunTurbulence,
     shaderSunCorona: getCookie('shaderSunCorona') || defaultSettings.shaderSunCorona,
+    shaderSunFlares: getCookie('shaderSunFlares') || defaultSettings.shaderSunFlares,
     shaderEarthNight: getCookie('shaderEarthNight') || defaultSettings.shaderEarthNight,
     shaderSoftLighting: getCookie('shaderSoftLighting') || defaultSettings.shaderSoftLighting,
     shaderRingLighting: getCookie('shaderRingLighting') || defaultSettings.shaderRingLighting,
@@ -722,10 +726,10 @@ let asteroidBeltsVisible = videoSettings.asteroidBeltsVisible;
 let asteroidOrbitsVisible = videoSettings.asteroidOrbitsVisible; // New
 let asteroidTrailsVisible = videoSettings.asteroidTrailsVisible; // New
 
-// Atmosphere / aurora / GRS-lightning shells — toggle with 0 for bare-planet view
+// Atmosphere / aurora / GRS-lightning / sun-flare shells — toggle with 0 for bare view
 // Declared early: createSimpleCelestialBody reads this while building meshes.
 let atmosphereEffectsVisible = true;
-const ATMOSPHERE_EFFECT_NAMES = ['atmosphere', 'aurora', 'grsLightning'];
+const ATMOSPHERE_EFFECT_NAMES = ['atmosphere', 'aurora', 'grsLightning', 'sunFlares'];
 
 function setAtmosphereEffectsVisible(visible) {
     atmosphereEffectsVisible = !!visible;
@@ -1869,6 +1873,39 @@ function getStarFresnelMesh(starBody) {
     return mesh;
 }
 
+/**
+ * Volumetric solar flare / plasma-ejecta shell.
+ * Ray-marched CMEs, prominence loops, and corona streamers (see sunFlareFragment).
+ * Child of the surface mesh so active regions co-rotate with the photosphere.
+ */
+function createSunFlareMesh(starBody) {
+    const surfaceR = starBody.radius * nHardCodeScaleFactor;
+    // Compact footprint, a bit more height for ejecta + heat haze (~22% R)
+    const atmosphereScale = 1.22;
+    const outerR = surfaceR * atmosphereScale;
+    const geo = new THREE.SphereGeometry(outerR, 96, 96);
+    const mat = new THREE.ShaderMaterial({
+        uniforms: {
+            time: { value: 0.0 },
+            intensity: { value: 0.72 },
+            sunRadius: { value: surfaceR },
+            atmosphereScale: { value: atmosphereScale }
+        },
+        vertexShader: ss_shaders.sunFlareVertex,
+        fragmentShader: ss_shaders.sunFlareFragment,
+        transparent: true,
+        depthWrite: false,
+        depthTest: true,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'sunFlares';
+    mesh.renderOrder = 2;
+    mesh.frustumCulled = true;
+    return mesh;
+}
+
 function createSimpleCelestialBody(celestialBody) {
 
     //Create the Group Object the Funciton will Return
@@ -1910,12 +1947,19 @@ function createSimpleCelestialBody(celestialBody) {
         advancedUniforms.push(celestialMaterial.uniforms);
     }
 
-    //if a star, add a glow mesh (+ optional fresnel rim)
+    //if a star, add a glow mesh (+ optional fresnel rim + plasma flares)
     if (celestialBody.type === "star") {
         const glowMesh = getStarGlowMesh(celestialBody);
         celestialBodyGroup.add(glowMesh);
         if (isShaderOn('shaderSunCorona')) {
             celestialBodyGroup.add(getStarFresnelMesh(celestialBody));
+        }
+        // Flares are children of the surface mesh so they co-rotate with active regions
+        if (isShaderOn('shaderSunFlares')) {
+            const flareMesh = createSunFlareMesh(celestialBody);
+            if (flareMesh.material.uniforms) advancedUniforms.push(flareMesh.material.uniforms);
+            flareMesh.visible = atmosphereEffectsVisible;
+            simpleCelestialMesh.add(flareMesh);
         }
     }
 
@@ -5294,6 +5338,27 @@ function syncSunCoronaLive(obj) {
     }
 }
 
+function syncSunFlaresLive(obj) {
+    if (!obj.data || obj.data.type !== 'star') return;
+    const sunMesh = obj.mesh.getObjectByName(obj.data.name) || obj.mesh.children[0];
+    if (!sunMesh || !sunMesh.isMesh) return;
+
+    let flares = sunMesh.getObjectByName('sunFlares');
+    if (isShaderOn('shaderSunFlares')) {
+        if (!flares) {
+            const flareMesh = createSunFlareMesh(obj.data);
+            flareMesh.visible = atmosphereEffectsVisible;
+            sunMesh.add(flareMesh);
+            // rebuildAdvancedUniforms() (caller) will pick up time/intensity
+        } else {
+            flares.visible = atmosphereEffectsVisible;
+        }
+    } else if (flares) {
+        sunMesh.remove(flares);
+        disposeMeshDeep(flares);
+    }
+}
+
 function syncAuroraLive(obj) {
     if (!obj.data || (obj.data.name !== 'Earth' && obj.data.name !== 'Jupiter')) return;
     const planetMesh = obj.mesh.getObjectByName(obj.data.name) || obj.mesh.children[0];
@@ -5371,9 +5436,12 @@ function syncCelestialObjectShadersLive(obj) {
         syncRingMaterialLive(obj);
         syncAuroraLive(obj);
         syncSunCoronaLive(obj);
+        syncSunFlaresLive(obj);
         rebuildAdvancedUniforms(obj);
     } else if (obj.data.type === 'star') {
         syncSunCoronaLive(obj);
+        syncSunFlaresLive(obj);
+        rebuildAdvancedUniforms(obj);
     }
 }
 

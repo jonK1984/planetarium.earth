@@ -1568,6 +1568,432 @@ const bloomCombineFragment = `
     }
 `;
 
+// ---------------------------------------------------------------------------
+// Solar flares / plasma ejecta (WebGL 2.0) — ray-marched volumetric shell
+//
+// Random CME-style jets, magnetic prominence loops, and corona streamers
+// with domain-warped FBM plasma. Active regions re-seed on staggered epochs
+// so ejecta appear to erupt from different points on the photosphere.
+//
+// NOTE: Three.js r132 only injects modelMatrix into the *vertex* prefix.
+// The fragment shader must declare it explicitly or the program fails to compile.
+// ---------------------------------------------------------------------------
+const sunFlareVertex = `
+    #include <common>
+    #include <logdepthbuf_pars_vertex>
+
+    varying vec3 vPositionW;
+    varying vec3 vLocalPos;
+    varying vec3 vSunCenterW;
+
+    void main() {
+        vLocalPos = position;
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vPositionW = worldPos.xyz;
+        vSunCenterW = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        #include <logdepthbuf_vertex>
+    }
+`;
+
+const sunFlareFragment = `
+    #include <common>
+    #include <logdepthbuf_pars_fragment>
+
+    // Required: not in Three r132 fragment prefix (only vertex).
+    uniform mat4 modelMatrix;
+
+    uniform float time;
+    uniform float intensity;
+    uniform float sunRadius;         // world-space surface radius
+    uniform float atmosphereScale;   // outer shell = surface * atmosphereScale
+
+    varying vec3 vPositionW;
+    varying vec3 vLocalPos;
+    varying vec3 vSunCenterW;
+
+    // ---- hash / noise -------------------------------------------------------
+    float hash11(float p) {
+        p = fract(p * 0.1031);
+        p *= p + 33.33;
+        p *= p + p;
+        return fract(p);
+    }
+
+    float hash13(vec3 p) {
+        p = fract(p * 0.1031);
+        p += dot(p, p.yzx + 33.33);
+        return fract((p.x + p.y) * p.z);
+    }
+
+    vec3 hash33(vec3 p) {
+        p = vec3(
+            dot(p, vec3(127.1, 311.7, 74.7)),
+            dot(p, vec3(269.5, 183.3, 246.1)),
+            dot(p, vec3(113.5, 271.9, 124.6))
+        );
+        return fract(sin(p) * 43758.5453123);
+    }
+
+    // Quasi-uniform direction on the sphere from a seed
+    vec3 sphereDir(float seed) {
+        vec3 h = hash33(vec3(seed, seed * 1.37, seed * 2.71));
+        float z = h.x * 2.0 - 1.0;
+        float a = h.y * 6.28318530718;
+        float r = sqrt(max(1.0 - z * z, 0.0));
+        return normalize(vec3(r * cos(a), z, r * sin(a)));
+    }
+
+    float valueNoise(vec3 p) {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float n000 = hash13(i + vec3(0.0, 0.0, 0.0));
+        float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
+        float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
+        float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
+        float n001 = hash13(i + vec3(0.0, 0.0, 1.0));
+        float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
+        float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
+        float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
+        float nx00 = mix(n000, n100, u.x);
+        float nx10 = mix(n010, n110, u.x);
+        float nx01 = mix(n001, n101, u.x);
+        float nx11 = mix(n011, n111, u.x);
+        return mix(mix(nx00, nx10, u.y), mix(nx01, nx11, u.y), u.z);
+    }
+
+    float fbm(vec3 p) {
+        float v = 0.0;
+        float a = 0.5;
+        for (int i = 0; i < 4; i++) {
+            v += a * valueNoise(p);
+            p = p * 2.11 + vec3(1.7, 9.2, 3.1);
+            a *= 0.5;
+        }
+        return v;
+    }
+
+    // Domain-warped plasma (two-pass warp) — organic filaments
+    float plasmaFBM(vec3 p) {
+        vec3 q = vec3(
+            fbm(p),
+            fbm(p + vec3(5.2, 1.3, 2.8)),
+            fbm(p + vec3(1.7, 9.2, 3.4))
+        );
+        vec3 r = vec3(
+            fbm(p + 4.0 * q + vec3(1.7, 9.2, 3.4) + time * 0.05),
+            fbm(p + 4.0 * q + vec3(8.3, 2.8, 1.1) - time * 0.04),
+            fbm(p + 4.0 * q + vec3(2.1, 4.5, 7.9) + time * 0.03)
+        );
+        return fbm(p + 4.0 * r);
+    }
+
+    // Affine inverse for uniform-scale * rotation + translation (sun mesh)
+    vec3 worldToLocal(vec3 worldPos, vec3 center) {
+        vec3 col0 = modelMatrix[0].xyz;
+        vec3 col1 = modelMatrix[1].xyz;
+        vec3 col2 = modelMatrix[2].xyz;
+        float sx = max(length(col0), 1e-8);
+        float sy = max(length(col1), 1e-8);
+        float sz = max(length(col2), 1e-8);
+        mat3 R = mat3(col0 / sx, col1 / sy, col2 / sz);
+        vec3 d = worldPos - center;
+        vec3 rl = transpose(R) * d;
+        return vec3(rl.x / sx, rl.y / sy, rl.z / sz);
+    }
+
+    bool raySphere(vec3 ro, vec3 rd, float radius, out float t0, out float t1) {
+        float b = dot(ro, rd);
+        float c = dot(ro, ro) - radius * radius;
+        float h = b * b - c;
+        if (h < 0.0) return false;
+        h = sqrt(h);
+        t0 = -b - h;
+        t1 = -b + h;
+        return true;
+    }
+
+    // Soft envelope for flare life-cycle (rise / peak / decay)
+    float flareEnvelope(float age) {
+        float rise  = smoothstep(0.0, 0.12, age);
+        float peak  = 1.0 - smoothstep(0.35, 0.75, age);
+        float decay = 1.0 - smoothstep(0.75, 1.0, age);
+        return rise * max(peak, 0.0) * max(decay + 0.35 * (1.0 - age), 0.0);
+    }
+
+    // Distance to a circular prominence arc (magnetic loop) above the surface.
+    // foot = unit direction of arc base; halfAngle = angular half-span of feet.
+    float prominenceLoop(vec3 n, float hNorm, vec3 foot, float halfAngle, float loopH) {
+        // Build orthonormal frame with foot as "pole" of the loop plane
+        vec3 ref = abs(foot.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3 e1 = normalize(cross(foot, ref));
+        vec3 e2 = cross(foot, e1);
+
+        // Arc lives in plane of e1 × foot (tilted by a small random roll via e2 mix)
+        float px = dot(n, e1);
+        float py = dot(n, foot);
+        float pz = dot(n, e2);
+
+        // Ideal loop: semicircle in (px, py) rising to loopH at midspan
+        float ang = atan(px, py); // 0 at foot apex direction
+        float span = halfAngle;
+        float along = abs(ang) / max(span, 1e-3);
+        if (along > 1.15) return 1e3;
+
+        // Target height along the arc (parabola-like rise)
+        float targetH = loopH * (1.0 - along * along);
+        float hErr = abs(hNorm - targetH);
+        // Lateral thickness of the loop tube
+        float lat = abs(pz);
+        float tube = length(vec2(hErr * 1.8, lat * 2.4));
+        // Fade near footpoints so loops meet the surface softly
+        float footFade = smoothstep(1.15, 0.55, along);
+        return tube / max(footFade, 0.15);
+    }
+
+    // Soft corona streamer density — subtle, close to the surface
+    float coronaStreamers(vec3 n, float hNorm, float t) {
+        float lat = n.y;
+        vec3 p = n * 5.5 + vec3(0.0, 0.0, t * 0.08);
+        float fil = fbm(p * 1.6);
+        float radialPref = smoothstep(0.05, 0.4, hNorm) * (1.0 - smoothstep(0.5, 0.9, hNorm));
+        float polar = smoothstep(0.4, 0.92, abs(lat));
+        float eq = 1.0 - smoothstep(0.0, 0.5, abs(lat));
+        float mask = mix(eq * 0.4, polar, 0.4);
+        float strands = smoothstep(0.5, 0.82, fil);
+        return strands * mask * radialPref * 0.07;
+    }
+
+    // Chromospheric base — thin hot sheath sealed to the photosphere (hNorm≈0)
+    float chromosphere(float hNorm) {
+        // Soft peak at the surface so limb has no dark gap under ejecta roots
+        return exp(-hNorm * 18.0) * 0.18 * (1.0 - smoothstep(0.12, 0.28, hNorm));
+    }
+
+    // Evaluate concurrent flare slots (tight footprint, taller ejecta + heat haze)
+    void evaluateFlares(vec3 n, float hNorm, float t, out float dens, out float heat) {
+        dens = 0.0;
+        heat = 0.0;
+
+        float stream = coronaStreamers(n, hNorm, t);
+        dens += stream;
+        heat += stream * 0.25;
+
+        float chromo = chromosphere(hNorm);
+        dens += chromo;
+        heat += chromo * 0.4;
+
+        const int SLOTS = 8;
+        for (int s = 0; s < SLOTS; s++) {
+            float si = float(s);
+            float period = 6.0 + hash11(si * 17.13) * 5.5;
+            float phase  = hash11(si * 91.7) * period;
+            float timeline = (t + phase) / period;
+            float epoch = floor(timeline);
+            float age = fract(timeline);
+
+            float env = flareEnvelope(age);
+            if (env < 0.012) continue;
+
+            float seed = epoch * 19.17 + si * 7.31 + 3.1;
+            vec3 foot = sphereDir(seed);
+            float align = dot(n, foot);
+
+            // Tight core footprint (surface radius stays small)
+            float halfAng = mix(0.12, 0.22, hash11(seed + 1.1));
+            // Haze is wider than the jet core so we early-out only when far from both
+            float nearRegion = smoothstep(0.72, 0.96, align);
+            if (nearRegion < 0.002) continue;
+
+            float cone = smoothstep(0.88, 0.985, align);
+            // Soft angular mask for heat haze (broader than plasma core)
+            float hazeCone = smoothstep(0.78, 0.94, align);
+
+            // How far this eruption reaches (fraction of shell height)
+            float jetLen = mix(0.35, 0.95, smoothstep(0.05, 0.55, age));
+            float alongJet = hNorm / max(jetLen, 0.05);
+            float inJetLen = 1.0 - smoothstep(0.82, 1.08, alongJet);
+            // Haze extends a little past the jet tip and spreads lower
+            float inHazeLen = 1.0 - smoothstep(0.9, 1.2, alongJet);
+            inHazeLen *= smoothstep(0.0, 0.08, hNorm);
+
+            // Shared turbulence field for jet + haze
+            vec3 jetP = n * 8.0 + foot * 3.0 + vec3(0.0, 0.0, t * 0.4 + seed);
+            jetP -= foot * (age * 1.4 + hNorm * 2.0);
+            float turb = 0.0;
+            float needTurb = step(0.01, max(cone, hazeCone) * env);
+            if (needTurb > 0.5) {
+                turb = plasmaFBM(jetP);
+            }
+
+            // --- Hot plasma jet core (tight, bright) ---
+            if (cone > 0.01) {
+                float coreAlign = pow(max(align, 0.0), mix(48.0, 22.0, age));
+                float filaments = smoothstep(0.4, 0.88, turb);
+                float spine = exp(-pow((1.0 - coreAlign) * 14.0, 2.0));
+                float sheath = exp(-pow((1.0 - coreAlign) * 5.5, 2.0)) * filaments;
+
+                float jet = (spine * 1.15 + sheath * 0.75) * inJetLen * cone * env;
+                jet *= mix(1.1, 0.55, age);
+                dens += jet * 0.75;
+                // Hot fireball cores — small but intense
+                heat += jet * mix(1.15, 0.45, alongJet);
+
+                float sprayGate = step(0.58, hash11(seed + 4.2));
+                float spray = pow(max(align, 0.0), 14.0) *
+                    smoothstep(0.05, 0.35, hNorm) *
+                    (1.0 - smoothstep(0.45, 0.85, hNorm)) *
+                    smoothstep(0.45, 0.8, turb) * env * sprayGate * 0.35;
+                dens += spray;
+                heat += spray * 0.55;
+            }
+
+            // --- Heat haze: soft shimmering envelope around the ejecta ---
+            if (hazeCone > 0.01 && env > 0.02) {
+                // Angular falloff wider than the jet; shimmer from low-freq noise
+                float angSoft = pow(max(align, 0.0), mix(10.0, 5.5, age));
+                float shimmer = 0.55 + 0.45 * fbm(n * 4.5 + vec3(t * 0.55, seed * 0.1, hNorm * 2.0));
+                // Domain-warp wobble so the haze "breathes"
+                float warp = 0.65 + 0.35 * sin(turb * 6.2831 + t * 1.8 + seed);
+                float haze = angSoft * inHazeLen * hazeCone * env * shimmer * warp;
+                // Stronger near the jet mid-height, thinner at tip
+                haze *= mix(1.0, 0.45, smoothstep(0.2, 0.95, alongJet));
+                // Low density volume — reads as glow, not solid plasma
+                dens += haze * 0.28;
+                heat += haze * 0.22;
+            }
+
+            // --- Small prominence loops ---
+            float loopH = mix(0.2, 0.5, hash11(seed + 2.3));
+            float loopEnv = env * smoothstep(0.08, 0.25, age) * (1.0 - smoothstep(0.7, 0.95, age));
+            if (loopEnv > 0.01 && align > 0.75) {
+                float dLoop = prominenceLoop(n, hNorm, foot, halfAng, loopH);
+                float loop = exp(-dLoop * dLoop * 32.0) * loopEnv;
+                float loopTurb = smoothstep(0.35, 0.85, fbm(n * 12.0 + vec3(t * 0.2, seed, 0.0)));
+                loop *= 0.45 + 0.45 * loopTurb;
+                dens += loop * 0.6;
+                heat += loop * 0.55;
+
+                // Soft haze halo around the loop
+                float loopHaze = exp(-dLoop * dLoop * 8.0) * loopEnv * 0.18;
+                dens += loopHaze;
+                heat += loopHaze * 0.2;
+            }
+
+            // Footpoint brightening — peaks at photosphere (hNorm≈0) to seal limb
+            float footGlow = pow(max(align, 0.0), 80.0) * exp(-hNorm * 22.0) * env * 0.75;
+            dens += footGlow;
+            heat += footGlow * 0.9;
+        }
+
+        dens = max(dens, 0.0);
+        heat = clamp(heat, 0.0, 2.2);
+    }
+
+    // Blackbody-ish flare color: deep red → orange → gold → white-hot core
+    vec3 flareColor(float heat, float hNorm) {
+        vec3 deep  = vec3(0.55, 0.05, 0.01);
+        vec3 red   = vec3(1.00, 0.18, 0.02);
+        vec3 orange= vec3(1.00, 0.45, 0.05);
+        vec3 gold  = vec3(1.00, 0.78, 0.25);
+        vec3 white = vec3(1.00, 0.96, 0.88);
+        vec3 blueW = vec3(0.85, 0.92, 1.00); // hottest core tip
+
+        float h = clamp(heat, 0.0, 1.8);
+        vec3 c = deep;
+        c = mix(c, red,    smoothstep(0.0, 0.22, h));
+        c = mix(c, orange, smoothstep(0.18, 0.48, h));
+        c = mix(c, gold,   smoothstep(0.4, 0.75, h));
+        c = mix(c, white,  smoothstep(0.65, 1.2, h));
+        c = mix(c, blueW,  smoothstep(1.0, 1.7, h) * 0.6);
+        // Outer plume / haze cools toward amber
+        c = mix(c, orange, smoothstep(0.4, 0.95, hNorm) * 0.3 * (1.0 - smoothstep(0.8, 1.4, h)));
+        return c;
+    }
+
+    void main() {
+        #include <logdepthbuf_fragment>
+
+        vec3 sunCenter = vSunCenterW;
+        float rOuter = length(vPositionW - sunCenter);
+        if (rOuter < 1e-8) {
+            rOuter = max(sunRadius * atmosphereScale, 1e-6);
+        }
+        float rSurface = rOuter / max(atmosphereScale, 1.001);
+        // Tiny overlap under the photosphere so limb has no dark hairline gap
+        // (tessellation / log-depth); samples still stop at the opaque disk.
+        float rInner = rSurface * 0.998;
+
+        vec3 roW = cameraPosition;
+        vec3 rdW = normalize(vPositionW - cameraPosition);
+        vec3 ro = roW - sunCenter;
+
+        float tOuter0, tOuter1;
+        if (!raySphere(ro, rdW, rOuter, tOuter0, tOuter1)) {
+            discard;
+        }
+
+        float tInner0, tInner1;
+        bool hitInner = raySphere(ro, rdW, rInner, tInner0, tInner1);
+
+        float tStart = max(tOuter0, 0.0);
+        float tEnd = tOuter1;
+        // March only the shell exterior (stop when ray hits photosphere sphere)
+        if (hitInner && tInner0 > tStart) {
+            tEnd = min(tEnd, tInner0);
+        }
+        if (tEnd <= tStart + 1e-6) {
+            discard;
+        }
+
+        const int MAX_STEPS = 36;
+        float chord = tEnd - tStart;
+        float stepLen = chord / float(MAX_STEPS);
+        // Height 0 = true photosphere (not an elevated inner wall)
+        float shellThick = max(rOuter - rSurface, 1e-6);
+
+        vec3 accumCol = vec3(0.0);
+        float accumA = 0.0;
+
+        for (int i = 0; i < MAX_STEPS; i++) {
+            float t = tStart + (float(i) + 0.5) * stepLen;
+            vec3 posW = roW + rdW * t;
+            vec3 localP = worldToLocal(posW, sunCenter);
+            if (dot(localP, localP) < 1e-12) {
+                localP = vLocalPos;
+            }
+
+            float rad = length(posW - sunCenter);
+            float hNorm = clamp((rad - rSurface) / shellThick, 0.0, 1.0);
+            vec3 n = normalize(localP);
+
+            float dens = 0.0;
+            float heat = 0.0;
+            evaluateFlares(n, hNorm, time, dens, heat);
+
+            dens *= intensity * 3.8 * (stepLen / shellThick);
+
+            vec3 sampleCol = flareColor(heat, hNorm);
+            // Hot cores bloom; haze stays softer
+            sampleCol *= 1.0 + heat * 0.55;
+
+            float a = 1.0 - exp(-dens * 1.35);
+            a *= (1.0 - accumA);
+            accumCol += sampleCol * a;
+            accumA += a;
+
+            if (accumA > 0.94) break;
+        }
+
+        accumA = smoothstep(0.0, 0.04, accumA) * accumA;
+        if (accumA < 0.001) discard;
+
+        vec3 outCol = accumCol / max(accumA, 1e-4);
+        gl_FragColor = vec4(outCol * clamp(accumA, 0.0, 1.0), clamp(accumA * 0.95, 0.0, 1.0));
+    }
+`;
+
 const ss_shaders = {
     sunEmissiveVertex: sunEmissiveVertex,
     sunEmissiveFragment: sunEmissiveFragment,
@@ -1576,6 +2002,8 @@ const ss_shaders = {
     sunGlowVertex: sunGlowVertex,
     sunGlowFragment: sunGlowFragment,
     sunFresnelFragment: sunFresnelFragment,
+    sunFlareVertex: sunFlareVertex,
+    sunFlareFragment: sunFlareFragment,
     advancedPlanetVertex: advancedPlanetVertex,
     softPlanetFragment: softPlanetFragment,
     earthSurfaceFragment: earthSurfaceFragment,

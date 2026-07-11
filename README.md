@@ -43,6 +43,7 @@ Each option is independent. An effect runs only when the **master is ON** and th
 |--------|----------------|
 | Sun Surface Turbulence | Animated FBM noise on the Sun surface |
 | Sun Corona & Fresnel | Stronger outer glow plus rim fresnel on the Sun |
+| Sun Plasma Flares & Ejecta | Volumetric ray-marched solar flares: random CME-style plasma jets, magnetic prominence loops, corona streamers, and footpoint brightening (domain-warped FBM plasma) |
 | Earth Night Lights | Day/night blend with real city lights (`earth_night_lights.png` from NASA Black Marble 2016); soft warm glow on the dark side that fades at the terminator |
 | Soft Terminator Lighting | Soft wrap lighting on textured bodies (replaces hard day/night cut) |
 | Ring Lighting & Shadows | Sun-lit rings with planet umbra on the ring plane |
@@ -53,7 +54,7 @@ Each option is independent. An effect runs only when the **master is ON** and th
 
 Atmospheres/cloud layers use the standard transparent Phong shells (advanced atmospheric scattering was removed after it distorted the scene).
 
-**Performance tip:** Leave Advanced Shaders **OFF** on low-end devices. Bloom, high texture tiers, and volumetric auroras are the heaviest options when the master is ON.
+**Performance tip:** Leave Advanced Shaders **OFF** on low-end devices. Bloom, high texture tiers, volumetric auroras, and solar plasma flares are the heaviest options when the master is ON.
 
 ---
 
@@ -95,7 +96,7 @@ Any static file server works (VS Code Live Server, `npx serve`, nginx, etc.).
 ├── solar_descriptions.js      # Narrative descriptions
 ├── solar_science_info.js      # Science / physical property data
 ├── solar_image_list.js        # Photo gallery file lists
-├── shaders.js                 # Custom GLSL (sun, trails, Earth, soft planet, rings, aurora, bloom)
+├── shaders.js                 # Custom GLSL (sun, flares, trails, Earth, soft planet, rings, aurora, bloom)
 ├── js/                        # Three.js, loaders, camera controls, MathJax
 ├── mesh/                      # Asteroid / small-body 3D models (GLB, OBJ)
 ├── textures_lo|md|hi|mx/      # Surface maps by quality tier (+ earth_night_lights.png)
