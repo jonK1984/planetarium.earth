@@ -1234,6 +1234,8 @@ camera.layers.enable(LAYER_SUN_FLARES);
 const DEFAULT_CAM_X = 13 * nHardCodeOrbitScaleFactor / 1000;
 const DEFAULT_CAM_Y = -1450 * nHardCodeOrbitScaleFactor / 1000;
 const DEFAULT_CAM_Z = 360 * nHardCodeOrbitScaleFactor / 1000;
+// Min dolly distance while tracking = factor × scaled body radius (prevents zooming inside)
+const MIN_ORBIT_DISTANCE_FACTOR = 2.0;
 //Create trail lines for celestialObjects
 
 //const N_TRAIL_POINTS = 100; // Number of points in each trail
@@ -1544,6 +1546,9 @@ let moonOrbitScaleMultiplier = planetScaleMultiplier * orbitScaleToPlanetScale;
 let focusedPlanet = null; // Tracks the selected planet
 let focusedCenterOfGravity = null;
 let trackingPlanet = false; // Whether camera follows
+// Dedicated ref for same-body reselect checks (callers may overwrite focusedPlanet before focusOnPlanet)
+let trackedFocusBody = null;
+let targetIndicatorVisible = true; // Preference: show targeting triangles when focused (toggle with 8)
 let previousCameraPosition = new THREE.Vector3(DEFAULT_CAM_X, DEFAULT_CAM_Y, DEFAULT_CAM_Z); // Initial camera pos
 let previousCameraTarget = new THREE.Vector3(0, 0, 0); // Default target
 
@@ -1582,13 +1587,59 @@ countTotalTextures();
 
 console.log(`Total textures to load: ${totalTextures}`);
 
-//Initialize the focus Cube
-const focusCube = new THREE.LineSegments(
-    new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
-    new THREE.LineBasicMaterial({ color: 0x0000ff }) // Orange
-);
+// Targeting indicator: 4 small blue triangles pointing toward the focused body center
+function createTargetTriangleGeometry(size) {
+    // Isosceles triangle in local XY: tip at origin, base along +Y (base faces outward after placement)
+    const halfBase = size * 0.45;
+    const height = size;
+    const geometry = new THREE.BufferGeometry();
+    const vertices = new Float32Array([
+        0, 0, 0,                 // tip (toward planet center)
+        -halfBase, height, 0,    // base left
+        halfBase, height, 0      // base right
+    ]);
+    geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+    geometry.computeVertexNormals();
+    return geometry;
+}
+
+function createFocusIndicator() {
+    const group = new THREE.Group();
+    const material = new THREE.MeshBasicMaterial({
+        color: 0x0088ff,
+        side: THREE.DoubleSide,
+        depthTest: true,
+        transparent: true,
+        opacity: 0.9
+    });
+    const triangleSize = 0.1;
+    // Half-extent of the imaginary square; corners sit just outside the unit body
+    const corner = 0.55;
+    const triangleGeo = createTargetTriangleGeometry(triangleSize);
+
+    // Four corners of a square; tip at mesh origin (inner), base extends radially outward
+    // Triangle geometry: tip at (0,0), base along +Y — rotate so +Y is outward from center
+    const placements = [
+        [ corner,  corner], // top-right
+        [ corner, -corner], // bottom-right
+        [-corner,  corner], // top-left
+        [-corner, -corner]  // bottom-left
+    ];
+
+    placements.forEach(([x, y]) => {
+        const mesh = new THREE.Mesh(triangleGeo, material);
+        mesh.position.set(x, y, 0);
+        // Map local +Y to outward direction (x, y): (-sin θ, cos θ) = normalize(x,y)
+        mesh.rotation.z = Math.atan2(-x, y);
+        group.add(mesh);
+    });
+
+    group.visible = false;
+    return group;
+}
+
+const focusCube = createFocusIndicator();
 scene.add(focusCube);
-focusCube.visible = false;
 
 
 //Initialize the cone geometry used for vectors
@@ -3696,6 +3747,7 @@ document.getElementById('restartSimulation').addEventListener('click', () => {
     focusedPlanet = null;
     focusedCenterOfGravity = null;
     trackingPlanet = false;
+    trackedFocusBody = null;
     focusCube.visible = false;
     radiusLine.visible = false;
     velocityLine.visible = false;
@@ -3711,6 +3763,7 @@ document.getElementById('restartSimulation').addEventListener('click', () => {
 
     // Reset camera to initial position
     camera.position.set(DEFAULT_CAM_X, DEFAULT_CAM_Y, DEFAULT_CAM_Z);
+    camera.up.set(0, 1, 0); // restore upright after free-orbit tumbles
     orbitControls.target.set(0, 0, 0);
     orbitControls.update();
 });
@@ -3719,6 +3772,7 @@ document.getElementById('restartSimulation').addEventListener('click', () => {
 document.getElementById('resetCameraPosition').addEventListener('click', () => {
     // Reset camera to initial position without affecting simulation state
     camera.position.set(DEFAULT_CAM_X, DEFAULT_CAM_Y, DEFAULT_CAM_Z);
+    camera.up.set(0, 1, 0); // restore upright after free-orbit tumbles
     orbitControls.target.set(0, 0, 0); // Look at origin (Sun)
     orbitControls.update();
 
@@ -4063,6 +4117,7 @@ document.getElementById('clearPlanet').addEventListener('click', () => {
     focusedCenterOfGravity = null;
 
     trackingPlanet = false;
+    trackedFocusBody = null;
     document.getElementById('focusBox').style.display = 'none';
     focusCube.visible = false;
     radiusLine.visible = false;
@@ -4095,6 +4150,7 @@ document.getElementById('clearPlanet').addEventListener('click', () => {
         orbitControls.maxDistance = Infinity;
         orbitControls.target.set(0, 0, 0); // Reset target to origin (Sun)
         camera.position.set(DEFAULT_CAM_X, DEFAULT_CAM_Y, DEFAULT_CAM_Z);
+        camera.up.set(0, 1, 0); // restore upright after free-orbit tumbles
         orbitControls.update();
     }
 
@@ -4834,6 +4890,8 @@ function animateFocusPlanet(oPlanet, oCenter) {
 
   const centralPos = oCenter.mesh.position ? oCenter.mesh.position : new THREE.Vector3(0, 0, 0);
   focusCube.position.copy(pos);
+  // Billboard the targeting reticle so triangles stay screen-readable
+  focusCube.lookAt(camera.position);
 
   //document.getElementById('focusContent').innerHTML = getFocusHTML(oPlanet);
   updateFocusBox(oPlanet);
@@ -5806,54 +5864,92 @@ document.getElementById('pauseResume').addEventListener('click', function() {
 });
 
 
-document.getElementById('togglePlanetOrbits').addEventListener('click', function() {
-    planetOrbitsVisible = !planetOrbitsVisible;
+function applyPlanetOrbitVisibility() {
     planetOrbitLines.forEach(line => line.visible = planetOrbitsVisible);
     celestialObjects.forEach(obj => {
         if (obj.trailLine && obj.data.type !== "moon" && obj.data.name !== "Sun") {
             obj.trailLine.visible = planetTrailsVisible && !planetOrbitsVisible;
         }
     });
-    this.textContent = planetOrbitsVisible ? 'Hide Planet Orbits' : 'Show Planet Orbits';
+    const btn = document.getElementById('togglePlanetOrbits');
+    if (btn) btn.textContent = planetOrbitsVisible ? 'Hide Planet Orbits' : 'Show Planet Orbits';
     setCookie('planetOrbitsVisible', planetOrbitsVisible, 30);
-});
+}
 
-
-document.getElementById('toggleMoonOrbits').addEventListener('click', function() {
-    moonOrbitsVisible = !moonOrbitsVisible;
+function applyMoonOrbitVisibility() {
     moonOrbitLines.forEach(line => line.visible = moonOrbitsVisible);
     celestialObjects.forEach(obj => {
         if (obj.data.type === "moon" && obj.trailLine) {
             obj.trailLine.visible = moonTrailsVisible && !moonOrbitsVisible;
         }
     });
-    this.textContent = moonOrbitsVisible ? 'Hide Moon Orbits' : 'Show Moon Orbits';
+    const btn = document.getElementById('toggleMoonOrbits');
+    if (btn) btn.textContent = moonOrbitsVisible ? 'Hide Moon Orbits' : 'Show Moon Orbits';
     setCookie('moonOrbitsVisible', moonOrbitsVisible, 30);
+}
+
+function applyPlanetTrailVisibility() {
+    celestialObjects.forEach(obj => {
+        if (obj.data.type !== "moon" && obj.trailLine) {
+            obj.trailLine.visible = planetTrailsVisible && !planetOrbitsVisible;
+        }
+    });
+    const btn = document.getElementById('togglePlanetTrails');
+    if (btn) btn.textContent = planetTrailsVisible ? 'Hide Planet Trails' : 'Show Planet Trails';
+    setCookie('planetTrailsVisible', planetTrailsVisible, 30);
+}
+
+function applyMoonTrailVisibility() {
+    celestialObjects.forEach(obj => {
+        if (obj.data.type === "moon" && obj.trailLine) {
+            obj.trailLine.visible = moonTrailsVisible && !moonOrbitsVisible;
+        }
+    });
+    const btn = document.getElementById('toggleMoonTrails');
+    if (btn) btn.textContent = moonTrailsVisible ? 'Hide Moon Trails' : 'Show Moon Trails';
+    setCookie('moonTrailsVisible', moonTrailsVisible, 30);
+}
+
+/** Key 6: toggle planet + moon orbits together */
+function togglePlanetMoonOrbits() {
+    const next = !(planetOrbitsVisible || moonOrbitsVisible);
+    planetOrbitsVisible = next;
+    moonOrbitsVisible = next;
+    applyPlanetOrbitVisibility();
+    applyMoonOrbitVisibility();
+}
+
+/** Key 7: toggle planet + moon trails together */
+function togglePlanetMoonTrails() {
+    const next = !(planetTrailsVisible || moonTrailsVisible);
+    planetTrailsVisible = next;
+    moonTrailsVisible = next;
+    applyPlanetTrailVisibility();
+    applyMoonTrailVisibility();
+}
+
+document.getElementById('togglePlanetOrbits').addEventListener('click', function() {
+    planetOrbitsVisible = !planetOrbitsVisible;
+    applyPlanetOrbitVisibility();
+});
+
+
+document.getElementById('toggleMoonOrbits').addEventListener('click', function() {
+    moonOrbitsVisible = !moonOrbitsVisible;
+    applyMoonOrbitVisibility();
 });
 
 // Toggle Planet Trails
 
 document.getElementById('togglePlanetTrails').addEventListener('click', function() {
     planetTrailsVisible = !planetTrailsVisible;
-    celestialObjects.forEach(obj => {
-        if (obj.data.type !== "moon" && obj.trailLine) {
-            obj.trailLine.visible = planetTrailsVisible && !planetOrbitsVisible;
-        }
-    });
-    this.textContent = planetTrailsVisible ? 'Hide Planet Trails' : 'Show Planet Trails';
-    setCookie('planetTrailsVisible', planetTrailsVisible, 30);
+    applyPlanetTrailVisibility();
 });
 
 // Toggle Moon Trails
 document.getElementById('toggleMoonTrails').addEventListener('click', function() {
     moonTrailsVisible = !moonTrailsVisible;
-    celestialObjects.forEach(obj => {
-        if (obj.data.type === "moon" && obj.trailLine) {
-            obj.trailLine.visible = moonTrailsVisible && !moonOrbitsVisible;
-        }
-    });
-    this.textContent = moonTrailsVisible ? 'Hide Moon Trails' : 'Show Moon Trails';
-    setCookie('moonTrailsVisible', moonTrailsVisible, 30);
+    applyMoonTrailVisibility();
 });
 
 /*document.getElementById('help').addEventListener('click', () => {
@@ -6908,17 +7004,27 @@ document.getElementById('infoDescription').addEventListener('click', () => {
 
 let vectorsVisible = true; // Track vector visibility state
 
-document.getElementById('toggleVectors').addEventListener('click', () => {
+function toggleVectorsVisible() {
     vectorsVisible = !vectorsVisible;
-    radiusLine.visible = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
-    velocityLine.visible = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
-    angularMomentumLine.visible = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
-    velocityCone.visible = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
-    angularMomentumCone.visible = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
-    radiusLabel.visible = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
-    velocityLabel.visible = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
-    angularMomentumLabel.visible = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
-    axisMesh.visible = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
+    const show = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
+    radiusLine.visible = show;
+    velocityLine.visible = show;
+    angularMomentumLine.visible = show;
+    velocityCone.visible = show;
+    angularMomentumCone.visible = show;
+    radiusLabel.visible = show;
+    velocityLabel.visible = show;
+    angularMomentumLabel.visible = show;
+    axisMesh.visible = show;
+}
+
+function toggleTargetIndicator() {
+    targetIndicatorVisible = !targetIndicatorVisible;
+    focusCube.visible = targetIndicatorVisible && !!focusedPlanet && trackingPlanet;
+}
+
+document.getElementById('toggleVectors').addEventListener('click', () => {
+    toggleVectorsVisible();
 });
 
 // Existing clearPlanet action (for completeness)
@@ -7399,11 +7505,28 @@ document.addEventListener('keydown', (event) => {
         // Toggle atmosphere shells, auroras, and GRS lightning — bare planet surface
         toggleAtmosphereEffects();
         event.preventDefault();
+    } else if (event.key === '6') {
+        // Toggle planet + moon orbit paths
+        togglePlanetMoonOrbits();
+        event.preventDefault();
+    } else if (event.key === '7') {
+        // Toggle planet + moon trails
+        togglePlanetMoonTrails();
+        event.preventDefault();
+    } else if (event.key === '8') {
+        // Toggle targeting triangles around focused body
+        toggleTargetIndicator();
+        event.preventDefault();
+    } else if (event.key === '9') {
+        // Toggle orbital vectors & rotation axis (same as ⓥ button)
+        toggleVectorsVisible();
+        event.preventDefault();
     } else if (event.key === 'Escape') {
         // Exit focus mode
         focusedPlanet = null;
         focusedCenterOfGravity = null;
         trackingPlanet = false;
+        trackedFocusBody = null;
         focusCube.visible = false;
         document.getElementById('focusBox').style.display = 'none';
         radiusLine.visible = false;
@@ -7583,13 +7706,22 @@ function updateOrbitControlScale(planetRadius, finalPlanetScale )
 {
     const scaledRadius = planetRadius * finalPlanetScale;
 
-    orbitControls.minDistance = scaledRadius * 1.2;
+    orbitControls.minDistance = scaledRadius * MIN_ORBIT_DISTANCE_FACTOR;
     orbitControls.maxDistance = Infinity;
 
     orbitControls.update();
 }
-function focusOnPlanet(focusedPlanet) {
-    const cogName = focusedPlanet.data.type === "star" ? focusedPlanet.data.name : focusedPlanet.parent.name;
+function focusOnPlanet(planetToFocus) {
+    // Compare against trackedFocusBody (not global focusedPlanet — callers may already overwrite it)
+    const isSameBody =
+        trackingPlanet &&
+        trackedFocusBody &&
+        trackedFocusBody.data.name === planetToFocus.data.name;
+
+    trackedFocusBody = planetToFocus;
+    focusedPlanet = planetToFocus;
+
+    const cogName = planetToFocus.data.type === "star" ? planetToFocus.data.name : planetToFocus.parent.name;
     updateConstants = true;
 
     focusedCenterOfGravity = getMeshByName(cogName);
@@ -7597,46 +7729,50 @@ function focusOnPlanet(focusedPlanet) {
 
     trackingPlanet = true;
     document.getElementById('focusBox').style.display = 'block';
-    focusCube.visible = true;
+    focusCube.visible = targetIndicatorVisible;
 
-    const isMesh = focusedPlanet.data.mesh ? true : false;
-    const planetRadius = focusedPlanet.data.radius * nHardCodeScaleFactor;
-    //const typeScaleMultiplier = getTypeScaleMultiplier(focusedPlanet.data.type);
-    const { finalPlanetScale, finalOrbitScale } = getScaleForObject(focusedPlanet);
+    const isMesh = planetToFocus.data.mesh ? true : false;
+    const planetRadius = planetToFocus.data.radius * nHardCodeScaleFactor;
+    //const typeScaleMultiplier = getTypeScaleMultiplier(planetToFocus.data.type);
+    const { finalPlanetScale, finalOrbitScale } = getScaleForObject(planetToFocus);
     const scaledRadius = planetRadius * finalPlanetScale;
 
-    focusCube.scale.set(planetRadius * finalPlanetScale * 2.2, planetRadius * finalPlanetScale * 2.2, planetRadius * finalPlanetScale * 2.2);
+    const indicatorScale = scaledRadius * 2.2;
+    focusCube.scale.set(indicatorScale, indicatorScale, indicatorScale);
 
-    const distanceMultiplier = focusedPlanet.data.type === "moon" ? 20 : 15;
+    const distanceMultiplier = planetToFocus.data.type === "moon" ? 20 : 15;
     const targetDistance = scaledRadius * distanceMultiplier;
 
     const planetPos = new THREE.Vector3();
-    const mesh = focusedPlanet.mesh instanceof THREE.Group ? focusedPlanet.mesh.children[0] : focusedPlanet.mesh;
+    const mesh = planetToFocus.mesh instanceof THREE.Group ? planetToFocus.mesh.children[0] : planetToFocus.mesh;
     mesh.getWorldPosition(planetPos);
 
     const direction = camera.position.clone().sub(orbitControls.target).normalize();
     
     if( !isFPSMode)
     {
-        camera.position.copy(planetPos).add(direction.multiplyScalar(targetDistance));
-        orbitControls.target.copy(planetPos);
+        // Only reframe camera when selecting a new body (preserve zoom/orbit on re-click)
+        if (!isSameBody) {
+            camera.position.copy(planetPos).add(direction.multiplyScalar(targetDistance));
+            orbitControls.target.copy(planetPos);
+        }
     
         updateOrbitControlScale(planetRadius,finalPlanetScale);
     }
-    /*orbitControls.minDistance = scaledRadius * 1.2;
+    /*orbitControls.minDistance = scaledRadius * MIN_ORBIT_DISTANCE_FACTOR;
     orbitControls.maxDistance = Infinity;
 
     orbitControls.update();*/
 
     const descriptionText = document.getElementById('descriptionContent');
-    if (focusedPlanet) {
-        descriptionText.innerHTML = planetDescriptions[focusedPlanet.data.name] || 'No description available.';
+    if (planetToFocus) {
+        descriptionText.innerHTML = planetDescriptions[planetToFocus.data.name] || 'No description available.';
     } else {
         descriptionText.innerHTML = 'Select a planet to see its description.';
     }
 
     // Update orbital plane
-    updatePlanes(focusedPlanet);
+    updatePlanes(planetToFocus);
 
     if (isFPSMode) {
         //focusedPlanet = null;

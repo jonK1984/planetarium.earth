@@ -79,6 +79,11 @@ SUGGESTED PRACTICES
 CHANGE LOG
 ----------
 ################################################################################
+2026-07-14
+S-00025
+  1. [.] solar_system.js / [js] OrbitControls.js / [.] solar_system.html — tracking UX polish + free orbit: skip camera reframe on same-body reselect; min orbit distance 2× radius while focused; replace focus wireframe cube with 4 blue corner triangles (key 8); keys 6/7 toggle planet+moon orbits/trails, 9 toggles vectors/axis; free 360° orbit via trackball-style offset+up rotation (no polar lock/flicker); reset camera.up on clear/reset; document keys in orbital controls help
+################################################################################
+################################################################################
 2026-07-15
 S-00024
   1. [.] shaders.js — screen-space sun glare / lens flare (Gaussian diffraction spikes, circular aperture ghosts with chromatic fringes, view-dependent optical-axis train); precision highp + sub-LSB deband for smooth black blends

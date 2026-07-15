@@ -1,6 +1,8 @@
 ( function () {
 
-	// Unlike TrackballControls, it maintains the "up" direction object.up (+Y by default).
+	// Free polar orbit: with minPolarAngle=-Infinity and maxPolarAngle=Infinity (defaults here),
+	// uses trackball-style rotation of camera offset + up (no pole lock, no up-flip flicker).
+	// With finite polar limits, behavior matches classic OrbitControls (clamped + makeSafe).
 	//
 	//    Orbit - left mouse / touch: one-finger move
 	//    Zoom - middle mouse, or mousewheel / touch: two-finger spread or squish
@@ -149,14 +151,130 @@
 
 				const offset = new THREE.Vector3(); // so camera.up is the orbit axis
 
-				const quat = new THREE.Quaternion().setFromUnitVectors( object.up, new THREE.Vector3( 0, 1, 0 ) );
-				const quatInverse = quat.clone().invert();
+				const quat = new THREE.Quaternion();
+				const quatInverse = new THREE.Quaternion();
+				const yAxis = new THREE.Vector3( 0, 1, 0 );
+				const rotQuat = new THREE.Quaternion();
+				const rotAxis = new THREE.Vector3();
 				const lastPosition = new THREE.Vector3();
 				const lastQuaternion = new THREE.Quaternion();
 				const twoPI = 2 * Math.PI;
+				const fallbackDir = new THREE.Vector3( 0, 0, 1 );
+
 				return function update() {
 
 					const position = scope.object.position;
+					const freePolar = scope.minPolarAngle === - Infinity && scope.maxPolarAngle === Infinity;
+
+					// --- Free 360° orbit: trackball-style (rotate offset + up together) ---
+					// Avoids spherical pole lock AND the up-flip path that caused flicker.
+					if ( freePolar ) {
+
+						if ( scope.autoRotate && state === STATE.NONE ) {
+
+							rotateLeft( getAutoRotationAngle() );
+
+						}
+
+						const dTheta = scope.enableDamping
+							? sphericalDelta.theta * scope.dampingFactor
+							: sphericalDelta.theta;
+						const dPhi = scope.enableDamping
+							? sphericalDelta.phi * scope.dampingFactor
+							: sphericalDelta.phi;
+
+						offset.copy( position ).sub( scope.target );
+
+						// Yaw around current camera up
+						if ( dTheta !== 0 ) {
+
+							rotQuat.setFromAxisAngle( scope.object.up, dTheta );
+							offset.applyQuaternion( rotQuat );
+							// up is the axis — unchanged
+
+						}
+
+						// Pitch around camera-right (up × offset). Rotate both offset and up.
+						if ( dPhi !== 0 ) {
+
+							rotAxis.crossVectors( scope.object.up, offset );
+							const axisLenSq = rotAxis.lengthSq();
+
+							if ( axisLenSq > EPS ) {
+
+								rotAxis.multiplyScalar( 1 / Math.sqrt( axisLenSq ) );
+								rotQuat.setFromAxisAngle( rotAxis, dPhi );
+								offset.applyQuaternion( rotQuat );
+								scope.object.up.applyQuaternion( rotQuat ).normalize();
+
+							}
+
+						}
+
+						// Dolly scale then clamp radius
+						let radius = offset.length() * scale;
+						radius = Math.max( scope.minDistance, Math.min( scope.maxDistance, radius ) );
+
+						if ( offset.lengthSq() > EPS ) {
+
+							offset.normalize().multiplyScalar( radius );
+
+						} else {
+
+							// Degenerate: place camera along a stable axis relative to up
+							fallbackDir.set( 0, 0, 1 );
+							rotQuat.setFromUnitVectors( yAxis, scope.object.up );
+							fallbackDir.applyQuaternion( rotQuat );
+							offset.copy( fallbackDir ).multiplyScalar( radius );
+
+						}
+
+						if ( scope.enableDamping === true ) {
+
+							scope.target.addScaledVector( panOffset, scope.dampingFactor );
+
+						} else {
+
+							scope.target.add( panOffset );
+
+						}
+
+						position.copy( scope.target ).add( offset );
+						scope.object.lookAt( scope.target );
+
+						if ( scope.enableDamping === true ) {
+
+							sphericalDelta.theta *= 1 - scope.dampingFactor;
+							sphericalDelta.phi *= 1 - scope.dampingFactor;
+							panOffset.multiplyScalar( 1 - scope.dampingFactor );
+
+						} else {
+
+							sphericalDelta.set( 0, 0, 0 );
+							panOffset.set( 0, 0, 0 );
+
+						}
+
+						scale = 1;
+
+						if ( zoomChanged || lastPosition.distanceToSquared( scope.object.position ) > EPS || 8 * ( 1 - lastQuaternion.dot( scope.object.quaternion ) ) > EPS ) {
+
+							scope.dispatchEvent( _changeEvent );
+							lastPosition.copy( scope.object.position );
+							lastQuaternion.copy( scope.object.quaternion );
+							zoomChanged = false;
+							return true;
+
+						}
+
+						return false;
+
+					}
+
+					// --- Classic OrbitControls path (finite polar limits) ---
+					quat.setFromUnitVectors( object.up, yAxis );
+					quatInverse.copy( quat ).invert();
+
 					offset.copy( position ).sub( scope.target ); // rotate offset to "y-axis-is-up" space
 
 					offset.applyQuaternion( quat ); // angle from z-axis around y-axis
