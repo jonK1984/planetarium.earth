@@ -1,6 +1,6 @@
 # planetarium.Earth
 
-**Interactive 3D solar system simulation** (v0.9.4 beta)
+**Interactive 3D solar system simulation** (v0.9.5 beta)
 
 A browser-based planetarium built with [Three.js](https://threejs.org/). Explore the Sun, planets, major moons, dwarf planets, and named asteroids with real orbital elements, science data, and customizable rendering — all running in **WebGL 2.0**.
 
@@ -50,7 +50,7 @@ Each option is independent. An effect runs only when the **master is ON** and th
 | Bloom & Tone Mapping | Mild bloom on bright areas + ACES filmic tone mapping |
 | Cloud Motion | Reserved cloud-motion control (cloud layers still use the standard Phong shells) |
 | Planet Auroras (Earth & Jupiter) | Volumetric ray-marched auroras: Earth polar ribbons with radial green→blue→red spikes; Jupiter north-pole sparkling blue ice swirl |
-| Io Volcanic Glow | Warm emissive tint on Io |
+| Volcanic & Plume Activity | Localized activity on Io, Venus, Enceladus, Triton, Europa: IR/lava hotspots (Io, Venus) and faint scientifically scaled plumes/jets (Io SO₂, Enceladus ice, Triton N₂ dust, rare Europa vapor). No whole-disk tint; Venus has surface hotspots only (cloud deck hides optical plumes) |
 
 Atmospheres/cloud layers use the standard transparent Phong shells (advanced atmospheric scattering was removed after it distorted the scene).
 
@@ -96,7 +96,7 @@ Any static file server works (VS Code Live Server, `npx serve`, nginx, etc.).
 ├── solar_descriptions.js      # Narrative descriptions
 ├── solar_science_info.js      # Science / physical property data
 ├── solar_image_list.js        # Photo gallery file lists
-├── shaders.js                 # Custom GLSL (sun, flares, trails, Earth, soft planet, rings, aurora, bloom)
+├── shaders.js                 # Custom GLSL (sun, flares, trails, Earth, soft planet, rings, aurora, volcanic plumes, bloom)
 ├── js/                        # Three.js, loaders, camera controls, MathJax
 ├── mesh/                      # Asteroid / small-body 3D models (GLB, OBJ)
 ├── textures_lo|md|hi|mx/      # Surface maps by quality tier (+ earth_night_lights.png)
@@ -143,7 +143,7 @@ Full tables live under the in-app **Help** menu (Simulation / Orbital / Flight c
 Code and documentation changes are recorded in plain language in:
 
 - **VERSION_TRACKING.txt** — session IDs (`S-#####`) and numbered change lines  
-  - Recent: **S-00016** Earth aurora ribbons + `0` key atmosphere toggle; **S-00007** night-side city glow; **S-00006** NASA Black Marble
+  - Recent: **S-00026** volcanic/cryovolcanic plumes + hotspots; **S-00016** Earth aurora ribbons + `0` key atmosphere toggle; **S-00007** night-side city glow
 - **FILE_MANIFEST.txt** — which files exist and what they do
 
 Git history shows diffs; these files record intent for future maintainers.

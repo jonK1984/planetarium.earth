@@ -663,9 +663,12 @@ const moonShadowUniformsAndFn = `
 `;
 
 // Soft-lit planet surface (map + optional normal/specular + wrap lighting)
+// Optional volcanic hotspots: small IR/lava cores at fixed UV vents (not whole-disk glow).
 const softPlanetFragment = `
     #include <common>
     #include <logdepthbuf_pars_fragment>
+
+    #define MAX_VOLCANIC_VENTS 8
 
     uniform sampler2D map;
     uniform sampler2D normalMap;
@@ -679,12 +682,41 @@ const softPlanetFragment = `
     uniform vec3 emissiveColor;
     uniform float emissiveIntensity;
 
+    // Localized caldera / lava-lake emissives (Io, Venus). GPU time for gentle pulse.
+    uniform float enableVolcanicHotspots;
+    uniform float ventCount;
+    uniform vec2 ventUV[MAX_VOLCANIC_VENTS];
+    uniform float ventStrength[MAX_VOLCANIC_VENTS];
+    uniform vec3 hotspotColor;
+    uniform float hotspotIntensity;
+    uniform float hotspotCoreScale; // larger = tighter core (default ~900)
+    uniform float time;
+
     ${moonShadowUniformsAndFn}
 
     varying vec2 vUv;
     varying vec3 vNormalW;
     varying vec3 vPositionW;
     varying vec3 vViewDir;
+
+    float volcanicHotspotMask(vec2 uv) {
+        if (enableVolcanicHotspots < 0.5 || ventCount < 0.5) return 0.0;
+        float mask = 0.0;
+        float core = max(hotspotCoreScale, 200.0);
+        for (int i = 0; i < MAX_VOLCANIC_VENTS; i++) {
+            if (float(i) >= ventCount) break;
+            float du = abs(uv.x - ventUV[i].x);
+            du = min(du, 1.0 - du);
+            // Longitude stretch so circular calderas stay roughly round near equator
+            float dv = uv.y - ventUV[i].y;
+            float d = length(vec2(du * 2.0, dv));
+            float spot = exp(-d * d * core) * ventStrength[i];
+            // Slow thermal pulse — not strobing
+            float pulse = 0.78 + 0.22 * sin(time * 0.55 + float(i) * 1.7);
+            mask += spot * pulse;
+        }
+        return min(mask, 1.5);
+    }
 
     void main() {
         #include <logdepthbuf_fragment>
@@ -717,7 +749,17 @@ const softPlanetFragment = `
             color += vec3(spec);
         }
 
+        // Legacy whole-body emissive (kept for non-hotspot uses; Io uses hotspots instead)
         color += emissiveColor * emissiveIntensity;
+
+        // Tiny lava / IR caldera cores — visible on night side and limb, not a planet-wide tint
+        if (enableVolcanicHotspots > 0.5) {
+            float hs = volcanicHotspotMask(vUv);
+            // Slightly stronger on night side so thermal IR reads like spacecraft imagery
+            float nightBoost = mix(0.55, 1.0, 1.0 - smoothstep(-0.05, 0.35, NdotL));
+            color += hotspotColor * hotspotIntensity * hs * nightBoost;
+        }
+
         gl_FragColor = vec4(color, 1.0);
     }
 `;
@@ -2150,7 +2192,8 @@ const sunGlareFragment = `
 //
 // Heat haze is a thin near-surface envelope in accumulateSlot (hazeCone) —
 // needs full step density; do not skip accumulate or thin the march.
-// Zoom fill-rate is handled in JS via half-res composite when close-up.
+// Zoom fill-rate is handled in JS via adaptive half/quarter-res composite when
+// the shell is large on screen (flight dive); full-res depth path farther out.
 // Mesh is single-sided (JS flips Front/Back when camera enters shell).
 //
 // NOTE: Three.js r132 only injects modelMatrix into the *vertex* prefix.
@@ -2587,6 +2630,220 @@ const sunFlareFragment = `
     }
 `;
 
+// ---------------------------------------------------------------------------
+// Volcanic / cryovolcanic plumes — compact ray-marched shell (WebGL 2.0)
+//
+// Fixed vent directions (local sphere). Narrow jets with slow rise/peak/decay.
+// Styles: 0 silicate/SO2 (Io), 1 ice water (Enceladus/Europa), 2 dark N2 dust (Triton).
+// Height is set by atmosphereScale in JS — keep scientifically modest.
+// NOTE: modelMatrix must be declared in fragment (Three r132 vertex-only inject).
+// ---------------------------------------------------------------------------
+const volcanicPlumeVertex = `
+    #include <common>
+    #include <logdepthbuf_pars_vertex>
+
+    varying vec3 vPositionW;
+    varying vec3 vLocalPos;
+    varying vec3 vCenterW;
+
+    void main() {
+        vLocalPos = position;
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vPositionW = worldPos.xyz;
+        vCenterW = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        #include <logdepthbuf_vertex>
+    }
+`;
+
+const volcanicPlumeFragment = `
+    #include <common>
+    #include <logdepthbuf_pars_fragment>
+
+    // Required: Three r132 injects modelMatrix only into the vertex prefix
+    uniform mat4 modelMatrix;
+
+    #define MAX_VOLCANIC_VENTS 8
+
+    uniform float time;
+    uniform float intensity;
+    uniform float planetRadius;     // fallback only; radii derived from shell mesh
+    uniform float atmosphereScale;
+    uniform float ventCount;
+    uniform vec3 ventDirs[MAX_VOLCANIC_VENTS]; // local unit dirs (Y = north)
+    uniform float ventWeight[MAX_VOLCANIC_VENTS];
+    uniform float ventPeriod[MAX_VOLCANIC_VENTS];
+    uniform float ventPhase[MAX_VOLCANIC_VENTS];
+    uniform float ventHeightFrac[MAX_VOLCANIC_VENTS];
+    uniform float style; // 0 Io silicate/SO2, 1 ice, 2 dark N2 dust
+    uniform vec3 plumeColor;
+    uniform float activityDuty;
+
+    varying vec3 vPositionW;
+    varying vec3 vLocalPos;
+    varying vec3 vCenterW;
+
+    float hash11(float p) {
+        p = fract(p * 0.1031);
+        p *= p + 33.33;
+        p *= p + p;
+        return fract(p);
+    }
+
+    // Slow scientific envelope: long quiet, gentle rise, brief peak, long fall
+    float plumeEnvelope(float age, float duty) {
+        float d = clamp(duty, 0.08, 0.55);
+        if (age > d) return 0.0;
+        float t = age / d;
+        float rise = smoothstep(0.0, 0.22, t);
+        float peak = 1.0 - smoothstep(0.35, 0.72, t);
+        float fall = 1.0 - smoothstep(0.55, 1.0, t);
+        return rise * max(peak, 0.0) * max(fall + 0.15 * (1.0 - t), 0.0);
+    }
+
+    bool raySphere(vec3 ro, vec3 rd, float rad, out float t0, out float t1) {
+        float b = dot(ro, rd);
+        float c = dot(ro, ro) - rad * rad;
+        float h = b * b - c;
+        if (h < 0.0) return false;
+        h = sqrt(h);
+        t0 = -b - h;
+        t1 = -b + h;
+        return true;
+    }
+
+    // footW = world-space unit direction from body center through the vent
+    void accumulateVent(
+        vec3 n, float hNorm, float t, float vi,
+        vec3 footW, float weight, float period, float phase, float hFrac,
+        inout float dens, inout float heat
+    ) {
+        float periodSafe = max(period, 4.0);
+        float timeline = (t + phase) / periodSafe;
+        float age = fract(timeline);
+        float seed = floor(timeline) + vi * 13.7;
+        float env = plumeEnvelope(age, activityDuty * mix(0.85, 1.15, hash11(seed)));
+        if (env < 0.02 || weight < 0.01) return;
+
+        float align = dot(n, footW);
+        // Tight cone — narrow space-visible columns, not hemispheric blasts
+        if (align < 0.88) return;
+
+        float cone = smoothstep(0.90, 0.985, align);
+        if (cone < 0.01) return;
+
+        float jetLen = clamp(hFrac, 0.15, 1.0) * mix(0.45, 1.0, smoothstep(0.05, 0.4, age));
+        float along = hNorm / max(jetLen, 0.05);
+        if (along > 1.15) return;
+
+        float inLen = 1.0 - smoothstep(0.75, 1.08, along);
+        float baseFade = smoothstep(0.0, 0.04, hNorm);
+
+        float corePow = 38.0;
+        if (style > 0.5 && style < 1.5) corePow = 48.0; // ice needles
+        if (style > 1.5) corePow = 58.0;                 // Triton dust: very thin
+        float core = pow(max(align, 0.0), corePow);
+
+        // Mild mid-height umbrella for Io SO2 only
+        float umbrella = 1.0;
+        if (style < 0.5) {
+            float mid = smoothstep(0.2, 0.5, along) * (1.0 - smoothstep(0.5, 0.85, along));
+            umbrella = 1.0 + 0.3 * mid;
+            core = mix(core, pow(max(align, 0.0), 20.0), mid * 0.3);
+        }
+
+        float turb = 0.7 + 0.3 * hash11(along * 40.0 + seed + t * 0.12);
+        float jet = core * cone * inLen * baseFade * env * weight * umbrella * turb;
+        dens += jet * 0.5;
+        heat += jet * mix(1.0, 0.35, along);
+    }
+
+    void main() {
+        #include <logdepthbuf_fragment>
+
+        if (ventCount < 0.5 || intensity < 0.001) discard;
+
+        vec3 centerW = vCenterW;
+        // Derive shell radii from the mesh itself (robust to parent scale — same as aurora)
+        float rOuter = length(vPositionW - centerW);
+        if (rOuter < 1e-8) {
+            rOuter = max(planetRadius * atmosphereScale, 1e-6);
+        }
+        float rSurface = rOuter / max(atmosphereScale, 1.001);
+        float rInner = rSurface * 0.998;
+
+        vec3 rdW = normalize(vPositionW - cameraPosition);
+        vec3 ro = cameraPosition - centerW;
+
+        float tOuter0, tOuter1;
+        if (!raySphere(ro, rdW, rOuter, tOuter0, tOuter1)) discard;
+
+        float tInner0, tInner1;
+        bool hitInner = raySphere(ro, rdW, rInner, tInner0, tInner1);
+
+        float tStart = max(tOuter0, 0.0);
+        float tEnd = tOuter1;
+        if (hitInner && tInner0 > tStart) {
+            tEnd = min(tEnd, tInner0);
+        }
+        if (tEnd <= tStart + 1e-6) discard;
+
+        // World-space vent directions (mesh co-rotates with surface)
+        vec3 footW[MAX_VOLCANIC_VENTS];
+        mat3 lin = mat3(modelMatrix);
+        for (int i = 0; i < MAX_VOLCANIC_VENTS; i++) {
+            if (float(i) >= ventCount) break;
+            footW[i] = normalize(lin * ventDirs[i]);
+        }
+
+        const int STEPS = 12;
+        float dt = (tEnd - tStart) / float(STEPS);
+        float dens = 0.0;
+        float heat = 0.0;
+        float tRay = tStart + dt * 0.5;
+        float shellH = max(rOuter - rSurface, 1e-6);
+
+        for (int s = 0; s < STEPS; s++) {
+            vec3 p = ro + rdW * tRay;
+            float r = length(p);
+            if (r > rSurface * 0.995 && r < rOuter) {
+                vec3 n = p / max(r, 1e-6);
+                float hNorm = (r - rSurface) / shellH;
+                for (int i = 0; i < MAX_VOLCANIC_VENTS; i++) {
+                    if (float(i) >= ventCount) break;
+                    accumulateVent(
+                        n, hNorm, time, float(i),
+                        footW[i], ventWeight[i], ventPeriod[i],
+                        ventPhase[i], ventHeightFrac[i],
+                        dens, heat
+                    );
+                }
+            }
+            tRay += dt;
+        }
+
+        // Scale density by step length relative to shell thickness
+        dens *= (dt / shellH) * 2.2;
+        heat *= (dt / shellH) * 2.2;
+        if (dens < 1e-4) discard;
+
+        vec3 col = plumeColor;
+        if (style < 0.5) {
+            col = mix(plumeColor * vec3(1.05, 0.92, 0.7), plumeColor, clamp(heat / max(dens, 1e-4), 0.0, 1.0));
+        } else if (style < 1.5) {
+            col = mix(plumeColor, plumeColor * vec3(0.85, 0.95, 1.12), 0.4);
+        } else {
+            col = plumeColor * vec3(0.6, 0.55, 0.5);
+        }
+
+        // Keep optical density modest — spacecraft-style thin plumes, not explosions
+        float alpha = clamp(dens * intensity, 0.0, 0.45);
+        alpha *= smoothstep(0.0, 0.05, dens);
+
+        gl_FragColor = vec4(col * alpha, alpha);
+    }
+`;
+
 const ss_shaders = {
     sunEmissiveVertex: sunEmissiveVertex,
     sunEmissiveFragment: sunEmissiveFragment,
@@ -2610,6 +2867,8 @@ const ss_shaders = {
     auroraFragment: auroraFragment,
     grsLightningVertex: grsLightningVertex,
     grsLightningFragment: grsLightningFragment,
+    volcanicPlumeVertex: volcanicPlumeVertex,
+    volcanicPlumeFragment: volcanicPlumeFragment,
     bloomCompositeVertex: bloomCompositeVertex,
     bloomBrightFragment: bloomBrightFragment,
     bloomBlurFragment: bloomBlurFragment,

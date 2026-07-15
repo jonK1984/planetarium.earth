@@ -35,6 +35,40 @@ h4 { margin: 10px 0 5px 0; }
     display: none;
 }
 
+/* PC-only top hotkey strip: 7 trails, 9 vectors/axis, C mode */
+#hotkeyHints {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255, 255, 255, 0.88);
+    background: rgba(0, 0, 0, 0.55);
+    padding: 5px 14px;
+    border-radius: 4px;
+    font-family: 'Roboto', sans-serif;
+    font-size: 0.82rem;
+    letter-spacing: 0.02em;
+    z-index: 12;
+    pointer-events: none;
+    white-space: nowrap;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 0.35em;
+}
+
+#hotkeyHints .hotkey-sep {
+    opacity: 0.45;
+    padding: 0 0.15em;
+}
+
+/* Hide on narrow / mobile layouts — not enough room */
+@media (max-width: 1280px) {
+    #hotkeyHints {
+        display: none !important;
+    }
+}
+
 /* Unified Button Style */
 .button {
     padding: 8px 16px; /* Larger size */

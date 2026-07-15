@@ -193,7 +193,8 @@ const SHADER_OPTION_LABELS = {
     shaderBloom: 'Bloom & Tone Mapping',
     shaderCloudMotion: 'Cloud Motion',
     shaderAurora: 'Planet Auroras (Earth & Jupiter)',
-    shaderIoGlow: 'Io Volcanic Glow'
+    // Cookie key kept as shaderIoGlow for compatibility; covers Io/Venus/Enceladus/Triton/Europa
+    shaderIoGlow: 'Volcanic & Plume Activity'
 };
 
 /** Max moons fed to surface shaders for analytic umbra (must match GLSL MAX_MOON_SHADOWS). */
@@ -473,25 +474,58 @@ if (isShaderOn('shaderBloom')) {
 }
 
 // ---------------------------------------------------------------------------
-// Sun flares depth-aware composite
+// Sun flares depth-aware composite + adaptive near-sun fill-rate
 //
-// Pass A: layer 0 scene → sceneRT (writes color + depth)
-// Pass B: layer 1 flares → flareRT sharing the SAME depthTexture
-//         clear COLOR only so planet depth occludes plasma at the limb
-// Pass C: bloom scene (optional), then additive depth-tested flares
-//         (flares after bloom avoids soft bloom bleed across the planet face)
+// Full-res path (shell small/medium on screen — limb peeks, planet views):
+//   Pass A: layer 0 scene → sceneRT (color + depth)
+//   Pass B: layer 1 flares into SAME RT (depth kept → planets occlude plasma)
+//   Pass C: bloom pre-flare scene, then additive depth-correct plasma
 //
+// Low-res path (shell large / camera inside — flight dive near sun):
+//   Pass A: layer 0 scene → full-res sceneRT
+//   Pass B: present scene (+ optional bloom)
+//   Pass C: layer 1 flares → pre-alloc half or quarter RT (black clear; no hot-path setSize)
+//   Pass D: bilinear additive upsample to screen
+//
+// Shader quality is unchanged (full 36-step march / plasmaFBM); only fragment
+// count scales with on-screen shell size so near-sun flight does not GPU-timeout.
 // Layer 1 = sun flares only; main scene stays on layer 0.
 // ---------------------------------------------------------------------------
 const LAYER_SUN_FLARES = 1;
+/**
+ * Adaptive flare pass resolution (shell half-angle, radians).
+ * Enter low-res early so the last full-res frame never fills the FOV
+ * (that death frame caused the ~1s near-sun hitch). Hysteresis avoids thrash.
+ */
+const FLARE_RES_HALF_ENTER_ANG = 0.12;   // ~6.9° — start half-res
+const FLARE_RES_HALF_EXIT_ANG = 0.09;    // drop back to full only below this
+const FLARE_RES_QUARTER_ENTER_ANG = 0.40; // ~22.9° or inside shell
+const FLARE_RES_QUARTER_EXIT_ANG = 0.32;  // leave quarter only below this + outside
 let flareDepthPipeline = null;
+/** Sticky scale so threshold crossings don't thrash path / RTs. */
+let _flareResScaleSticky = 1.0;
+
+// Scratch for shell coverage (avoid per-frame alloc)
+const _flareShellWorldPos = new THREE.Vector3();
+const _flareShellWorldScale = new THREE.Vector3();
+const _flareShellCamPos = new THREE.Vector3();
+
+function _makeFlareColorRT(w, h) {
+    return new THREE.WebGLRenderTarget(Math.max(1, w), Math.max(1, h), {
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        format: THREE.RGBAFormat,
+        depthBuffer: false,
+        stencilBuffer: false
+    });
+}
 
 function createFlareDepthPipeline() {
     const w = Math.max(1, Math.floor(window.innerWidth * renderer.getPixelRatio()));
     const h = Math.max(1, Math.floor(window.innerHeight * renderer.getPixelRatio()));
 
-    // Single full-res RT with depth. Pass A writes scene+depth; pass B draws
-    // flares into the SAME buffer without clearing depth so planets occlude plasma.
+    // Single full-res RT with depth. Pass A writes scene+depth; pass B (full-res)
+    // draws flares into the SAME buffer without clearing depth so planets occlude plasma.
     // (Sharing one DepthTexture across two FBOs is fragile in Three r132.)
     const sceneRT = new THREE.WebGLRenderTarget(w, h, {
         minFilter: THREE.LinearFilter,
@@ -508,6 +542,9 @@ function createFlareDepthPipeline() {
         depthBuffer: false,
         stencilBuffer: false
     });
+    // Pre-allocated low-res flare buffers — never setSize on the hot path (avoids GPU stall).
+    const flareHalfRT = _makeFlareColorRT(Math.floor(w * 0.5), Math.floor(h * 0.5));
+    const flareQuarterRT = _makeFlareColorRT(Math.floor(w * 0.25), Math.floor(h * 0.25));
 
     const quadGeo = new THREE.PlaneGeometry(2, 2);
     const copyMat = new THREE.ShaderMaterial({
@@ -538,11 +575,7 @@ function createFlareDepthPipeline() {
         depthWrite: false,
         transparent: true
     });
-    // sceneOnly + (composited - sceneOnly) isn't available; we blit sceneOnly for bloom
-    // then add (full sceneRT - needs delta). Simpler: bloom sceneOnly, then add
-    // (sceneRT - sceneOnly) ≈ flares. Approximate via full sceneRT after flares for
-    // non-bloom path; for bloom: bloom sceneOnly then additive-blit flare contribution.
-    // Flare contribution = we re-render flares to a black RT… skip: use delta shader:
+    // Positive difference ≈ additive plasma only (full-res depth path)
     const flareExtractMat = new THREE.ShaderMaterial({
         uniforms: {
             tFull: { value: null },
@@ -556,7 +589,6 @@ function createFlareDepthPipeline() {
             void main() {
                 vec3 full = texture2D(tFull, vUv).rgb;
                 vec3 scn  = texture2D(tScene, vUv).rgb;
-                // Positive difference ≈ additive plasma only
                 vec3 flare = max(full - scn, 0.0);
                 gl_FragColor = vec4(flare, 1.0);
             }
@@ -570,9 +602,11 @@ function createFlareDepthPipeline() {
     quadScene.add(quad);
     const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-    return {
+    const pipe = {
         sceneRT,
         sceneOnlyRT,
+        flareHalfRT,
+        flareQuarterRT,
         copyMat,
         addMat,
         flareExtractMat,
@@ -580,25 +614,90 @@ function createFlareDepthPipeline() {
         quad,
         orthoCam,
         quadGeo,
+        _fullW: w,
+        _fullH: h,
+        /** Force GPU alloc of low-res FBOs so first near-sun frame doesn't stall. */
+        _warmLowResTargets() {
+            const prev = renderer.getRenderTarget();
+            const prevClear = new THREE.Color();
+            renderer.getClearColor(prevClear);
+            const prevAlpha = renderer.getClearAlpha();
+            const prevAutoClear = renderer.autoClear;
+            renderer.autoClear = false;
+            renderer.setClearColor(0x000000, 0);
+            renderer.setRenderTarget(this.flareHalfRT);
+            renderer.clear(true, true, true);
+            renderer.setRenderTarget(this.flareQuarterRT);
+            renderer.clear(true, true, true);
+            renderer.setRenderTarget(prev);
+            renderer.setClearColor(prevClear, prevAlpha);
+            renderer.autoClear = prevAutoClear;
+        },
         resize(nw, nh, npr) {
             const fw = Math.max(1, Math.floor(nw * npr));
             const fh = Math.max(1, Math.floor(nh * npr));
             this.sceneRT.setSize(fw, fh);
             this.sceneOnlyRT.setSize(fw, fh);
+            this.flareHalfRT.setSize(Math.max(1, Math.floor(fw * 0.5)), Math.max(1, Math.floor(fh * 0.5)));
+            this.flareQuarterRT.setSize(Math.max(1, Math.floor(fw * 0.25)), Math.max(1, Math.floor(fh * 0.25)));
+            this._fullW = fw;
+            this._fullH = fh;
+            this._warmLowResTargets();
         },
         dispose() {
             this.sceneRT.dispose();
             this.sceneOnlyRT.dispose();
+            this.flareHalfRT.dispose();
+            this.flareQuarterRT.dispose();
             this.copyMat.dispose();
             this.addMat.dispose();
             this.flareExtractMat.dispose();
             this.quadGeo.dispose();
         },
+        /** Pick pre-allocated low-res RT (no setSize). */
+        _flareRTForScale(scale) {
+            return scale <= 0.3 ? this.flareQuarterRT : this.flareHalfRT;
+        },
+        /** Bloom pre-flare scene color buffer to the backbuffer. */
+        _presentSceneWithBloom(sceneColorTex, bloom) {
+            if (bloom) {
+                bloom.brightMat.uniforms.tDiffuse.value = sceneColorTex;
+                renderer.setRenderTarget(bloom.brightRT);
+                renderer.clear(true, true, true);
+                renderer.render(bloom.brightScene, bloom.orthoCam);
+
+                bloom.blurMat.uniforms.tDiffuse.value = bloom.brightRT.texture;
+                bloom.blurMat.uniforms.direction.value.set(1, 0);
+                renderer.setRenderTarget(bloom.blurRT);
+                renderer.clear(true, true, true);
+                renderer.render(bloom.blurScene, bloom.orthoCam);
+
+                bloom.blurMat.uniforms.tDiffuse.value = bloom.blurRT.texture;
+                bloom.blurMat.uniforms.direction.value.set(0, 1);
+                renderer.setRenderTarget(bloom.brightRT);
+                renderer.clear(true, true, true);
+                renderer.render(bloom.blurScene, bloom.orthoCam);
+
+                bloom.combineMat.uniforms.tDiffuse.value = sceneColorTex;
+                bloom.combineMat.uniforms.tBloom.value = bloom.brightRT.texture;
+                renderer.setRenderTarget(null);
+                renderer.clear(true, true, true);
+                renderer.render(bloom.combineScene, bloom.orthoCam);
+            } else {
+                this.quad.material = this.copyMat;
+                this.copyMat.uniforms.tDiffuse.value = sceneColorTex;
+                renderer.setRenderTarget(null);
+                renderer.clear(true, true, true);
+                renderer.render(this.quadScene, this.orthoCam);
+            }
+        },
         /**
-         * Two-pass depth-occluded flares on one RT, then present with optional bloom.
-         * Bloom uses pre-flare scene; depth-correct flares are added after bloom.
+         * Adaptive two-pass flares + optional bloom.
+         * @param {number} [flareResScale=1] 1 = full-res depth composite;
+         *   0.5 / 0.25 = low-res flare pass + additive upsample (near-sun fill-rate).
          */
-        render(mainScene, mainCamera, bloom) {
+        render(mainScene, mainCamera, bloom, flareResScale) {
+            const scale = (flareResScale != null && flareResScale > 0) ? flareResScale : 1;
             const prevClear = new THREE.Color();
             renderer.getClearColor(prevClear);
             const prevAlpha = renderer.getClearAlpha();
@@ -613,6 +712,33 @@ function createFlareDepthPipeline() {
             renderer.clear(true, true, true);
             renderer.render(mainScene, mainCamera);
 
+            if (scale < 0.999) {
+                // ---- Near-sun / large-shell path: low-res flares, full-res scene ----
+                // Present scene first (bloom without plasma), then additive-upsample plasma.
+                this._presentSceneWithBloom(this.sceneRT.texture, bloom);
+
+                const lowRT = this._flareRTForScale(scale);
+                mainCamera.layers.set(LAYER_SUN_FLARES);
+                renderer.setRenderTarget(lowRT);
+                renderer.setClearColor(0x000000, 0);
+                renderer.clear(true, true, true);
+                renderer.render(mainScene, mainCamera);
+
+                mainCamera.layers.set(0);
+                mainCamera.layers.enable(LAYER_SUN_FLARES);
+
+                this.quad.material = this.addMat;
+                this.addMat.uniforms.tDiffuse.value = lowRT.texture;
+                renderer.setRenderTarget(null);
+                // Do not clear — scene (+ bloom) already on backbuffer
+                renderer.render(this.quadScene, this.orthoCam);
+
+                renderer.autoClear = prevAutoClear;
+                renderer.setClearColor(prevClear, prevAlpha);
+                return;
+            }
+
+            // ---- Full-res depth path: planets occlude plasma at the limb ----
             // Snapshot scene before flares (for bloom without plasma bleed)
             if (bloom) {
                 this.quad.material = this.copyMat;
@@ -633,42 +759,18 @@ function createFlareDepthPipeline() {
             mainCamera.layers.enable(LAYER_SUN_FLARES);
 
             if (bloom) {
-                // Bloom pre-flare scene only
-                bloom.brightMat.uniforms.tDiffuse.value = this.sceneOnlyRT.texture;
-                renderer.setRenderTarget(bloom.brightRT);
-                renderer.clear(true, true, true);
-                renderer.render(bloom.brightScene, bloom.orthoCam);
-
-                bloom.blurMat.uniforms.tDiffuse.value = bloom.brightRT.texture;
-                bloom.blurMat.uniforms.direction.value.set(1, 0);
-                renderer.setRenderTarget(bloom.blurRT);
-                renderer.clear(true, true, true);
-                renderer.render(bloom.blurScene, bloom.orthoCam);
-
-                bloom.blurMat.uniforms.tDiffuse.value = bloom.blurRT.texture;
-                bloom.blurMat.uniforms.direction.value.set(0, 1);
-                renderer.setRenderTarget(bloom.brightRT);
-                renderer.clear(true, true, true);
-                renderer.render(bloom.blurScene, bloom.orthoCam);
-
-                bloom.combineMat.uniforms.tDiffuse.value = this.sceneOnlyRT.texture;
-                bloom.combineMat.uniforms.tBloom.value = bloom.brightRT.texture;
-                renderer.setRenderTarget(null);
-                renderer.clear(true, true, true);
-                renderer.render(bloom.combineScene, bloom.orthoCam);
+                this._presentSceneWithBloom(this.sceneOnlyRT.texture, bloom);
 
                 // Add depth-correct plasma (full - sceneOnly) after bloom
-                this.quad.material = this.flareExtractMat;
-                this.flareExtractMat.uniforms.tFull.value = this.sceneRT.texture;
-                this.flareExtractMat.uniforms.tScene.value = this.sceneOnlyRT.texture;
-                // Reuse addMat path: extract to... actually draw extract with additive
-                // Switch to a one-shot: extract shader already outputs flare RGB; add it
                 const extractAsAdd = this.flareExtractMat;
                 extractAsAdd.blending = THREE.AdditiveBlending;
                 extractAsAdd.transparent = true;
                 extractAsAdd.depthTest = false;
                 extractAsAdd.depthWrite = false;
                 this.quad.material = extractAsAdd;
+                this.flareExtractMat.uniforms.tFull.value = this.sceneRT.texture;
+                this.flareExtractMat.uniforms.tScene.value = this.sceneOnlyRT.texture;
+                renderer.setRenderTarget(null);
                 renderer.render(this.quadScene, this.orthoCam);
             } else {
                 // Blit composited scene+flares to screen
@@ -683,6 +785,10 @@ function createFlareDepthPipeline() {
             renderer.setClearColor(prevClear, prevAlpha);
         }
     };
+
+    // Allocate half/quarter FBOs on the GPU immediately (not on first near-sun frame).
+    pipe._warmLowResTargets();
+    return pipe;
 }
 
 function getSunFlareMesh() {
@@ -696,6 +802,63 @@ function getSunFlareMesh() {
         if (flares) return flares;
     }
     return null;
+}
+
+/**
+ * Outer-shell angular size + inside-shell flag for adaptive flare resolution.
+ * Uses the same world-outer / inside threshold as updateSunFlareMeshSide.
+ */
+function getSunFlareShellScreenMetrics(flareMesh) {
+    if (!flareMesh) {
+        return { angRad: 0, insideShell: false, worldOuter: 0, camDist: Infinity };
+    }
+    const localOuter = flareMesh.userData.flareOuterRadius;
+    if (!(localOuter > 0)) {
+        return { angRad: 0, insideShell: false, worldOuter: 0, camDist: Infinity };
+    }
+
+    flareMesh.getWorldPosition(_flareShellWorldPos);
+    flareMesh.getWorldScale(_flareShellWorldScale);
+    const worldOuter = localOuter * _flareShellWorldScale.x;
+    camera.getWorldPosition(_flareShellCamPos);
+    const camDist = _flareShellCamPos.distanceTo(_flareShellWorldPos);
+    const insideShell = camDist < worldOuter * 0.98;
+    const angRad = angularRadiusFromCamera(_flareShellCamPos, _flareShellWorldPos, worldOuter);
+    return { angRad, insideShell, worldOuter, camDist };
+}
+
+/**
+ * Choose flare pass resolution scale. Shader quality is unchanged; only
+ * fragment count drops when the shell fills the FOV (near-sun flight).
+ * 1.0 = full-res depth composite; 0.5 / 0.25 = low-res + upsample.
+ * Sticky hysteresis: enter low-res early, leave late — avoids thrash + death frames.
+ */
+function chooseFlareResScale(flareMesh) {
+    const m = getSunFlareShellScreenMetrics(flareMesh);
+    const ang = m.angRad;
+    const inside = m.insideShell;
+    let scale = _flareResScaleSticky;
+
+    if (inside || ang >= FLARE_RES_QUARTER_ENTER_ANG) {
+        scale = 0.25;
+    } else if (scale <= 0.3) {
+        // Leave quarter only when clearly smaller and outside shell
+        if (ang < FLARE_RES_QUARTER_EXIT_ANG) {
+            scale = ang >= FLARE_RES_HALF_ENTER_ANG ? 0.5 : 1.0;
+        } else {
+            scale = 0.25;
+        }
+    } else if (ang >= FLARE_RES_HALF_ENTER_ANG) {
+        scale = 0.5;
+    } else if (scale <= 0.6) {
+        // Leave half only when clearly smaller
+        scale = ang < FLARE_RES_HALF_EXIT_ANG ? 1.0 : 0.5;
+    } else {
+        scale = 1.0;
+    }
+
+    _flareResScaleSticky = scale;
+    return scale;
 }
 
 /**
@@ -738,12 +901,16 @@ const SUN_GLARE_MAX_OCCLUDERS = 12;
 const SUN_GLARE_BASE_INTENSITY = 0.50;
 /** 1 AU in km (same constant used elsewhere in this file). */
 const SUN_GLARE_AU_KM = 1.496e8;
+const SUN_GLARE_MILES_TO_KM = 1.609344;
 /**
- * Near-sun kill zone: fully off at/inside 15M km so volumetric solar flares stay clean.
- * Soft ramp up to full by ~45M km (~0.3 AU).
+ * Near-sun kill zone for screen-space glare / horizon rays:
+ * fully off at/inside 55M miles so volumetric solar flares stay clean.
+ * Soft ramp back in from 55M → 90M miles (avoids a hard pop at the threshold).
  */
-const SUN_GLARE_NEAR_OFF_KM = 15e6;
-const SUN_GLARE_NEAR_FULL_KM = 45e6;
+const SUN_GLARE_NEAR_OFF_MI = 55e6;
+const SUN_GLARE_NEAR_FULL_MI = 90e6;
+const SUN_GLARE_NEAR_OFF_KM = SUN_GLARE_NEAR_OFF_MI * SUN_GLARE_MILES_TO_KM;
+const SUN_GLARE_NEAR_FULL_KM = SUN_GLARE_NEAR_FULL_MI * SUN_GLARE_MILES_TO_KM;
 /**
  * Distance falloff: shrinks/dims when zooming out, but stays readable mid-system.
  * Middle ground — not a hard cliff, not a fixed screen stamp.
@@ -1114,14 +1281,14 @@ function updateSunGlareUniforms(pipe) {
     const distAU = camDist / Math.max(nHardCodeOrbitScaleFactor, 1e-6);
     const distKm = distAU * SUN_GLARE_AU_KM;
 
-    // Close-up: fully kill glare by 15M km so ray-marched solar flares aren't washed out
+    // Close-up: fully kill glare at/inside 55M miles so ray-marched solar flares aren't washed out
     if (distKm <= SUN_GLARE_NEAR_OFF_KM) {
         u.intensity.value = 0;
         u.rimBoost.value = 0;
         u.flareScale.value = 0;
         return 0;
     }
-    // Smooth ramp 15M → 45M km (0 → 1)
+    // Smooth ramp 55M → 90M miles (0 → 1)
     const nearFade = THREE.MathUtils.clamp(
         (distKm - SUN_GLARE_NEAR_OFF_KM) / Math.max(SUN_GLARE_NEAR_FULL_KM - SUN_GLARE_NEAR_OFF_KM, 1),
         0,
@@ -1201,9 +1368,11 @@ function renderSolarSystemFrame() {
         applySunFlareOcclusion(flares);
     }
 
-    // Always depth-composite flares when active so limb partial occultation works
+    // Always composite flares when active; scale drops near the sun (fill-rate)
+    // while the full-res path keeps planet limb occlusion farther out.
     if (shouldUseFlareDepthComposite(flares)) {
-        ensureFlareDepthPipeline().render(scene, camera, bloomPipeline);
+        const flareResScale = chooseFlareResScale(flares);
+        ensureFlareDepthPipeline().render(scene, camera, bloomPipeline, flareResScale);
         compositeSunGlare();
         return;
     }
@@ -1489,10 +1658,170 @@ let asteroidBeltsVisible = videoSettings.asteroidBeltsVisible;
 let asteroidOrbitsVisible = videoSettings.asteroidOrbitsVisible; // New
 let asteroidTrailsVisible = videoSettings.asteroidTrailsVisible; // New
 
-// Atmosphere / aurora / GRS-lightning / sun-flare shells — toggle with 0 for bare view
+// Atmosphere / aurora / GRS-lightning / sun-flare / volcanic-plume shells — toggle with 0 for bare view
 // Declared early: createSimpleCelestialBody reads this while building meshes.
 let atmosphereEffectsVisible = true;
-const ATMOSPHERE_EFFECT_NAMES = ['atmosphere', 'aurora', 'grsLightning', 'sunFlares'];
+const ATMOSPHERE_EFFECT_NAMES = ['atmosphere', 'aurora', 'grsLightning', 'sunFlares', 'volcanicPlumes'];
+
+/** Max vents shared with softPlanetFragment / volcanicPlumeFragment GLSL. */
+const MAX_VOLCANIC_VENTS = 8;
+
+/**
+ * Scientifically scaled volcanic / cryovolcanic profiles.
+ * Heights are fractions of body radius (see plan). Lon/lat are approximate for texture alignment.
+ * style: 0 = silicate/SO2 (Io), 1 = ice (Enceladus/Europa), 2 = dark N2 dust (Triton).
+ */
+const VOLCANIC_PROFILES = {
+    Io: {
+        hasHotspots: true,
+        hasPlumes: true,
+        atmosphereScale: 1.10,       // max ~10% R (Pele-class cap; typical shorter)
+        intensity: 0.26,
+        activityDuty: 0.28,
+        style: 0,
+        plumeColor: 0xe8d9a8,        // faint SO2 / scattered light
+        hotspotColor: 0xff5520,
+        hotspotIntensity: 0.85,
+        hotspotCoreScale: 1100,
+        vents: [
+            // name, lat deg, lon deg (0–360), weight, period s, heightFrac of shell, phase
+            { name: 'Loki', lat: 13, lon: 308, weight: 1.2, period: 18, heightFrac: 0.45, phase: 0.0 },
+            { name: 'Pele', lat: -18, lon: 255, weight: 1.0, period: 22, heightFrac: 0.95, phase: 4.0 },
+            { name: 'Prometheus', lat: -1.5, lon: 154, weight: 0.9, period: 14, heightFrac: 0.40, phase: 7.0 },
+            { name: 'Pillan', lat: -12, lon: 244, weight: 0.85, period: 20, heightFrac: 0.55, phase: 11.0 },
+            { name: 'Tvashtar', lat: 62, lon: 120, weight: 0.95, period: 26, heightFrac: 0.85, phase: 2.5 },
+            { name: 'Culann', lat: -20, lon: 160, weight: 0.7, period: 16, heightFrac: 0.42, phase: 9.0 }
+        ]
+    },
+    Venus: {
+        hasHotspots: true,
+        hasPlumes: false,            // cloud deck hides optical plumes
+        hotspotColor: 0xff3a12,
+        hotspotIntensity: 0.55,      // muted; surface under clouds
+        hotspotCoreScale: 900,
+        vents: [
+            { name: 'Maat Mons', lat: 0.5, lon: 194.5, weight: 1.1, period: 30, heightFrac: 0.2, phase: 0.0 },
+            { name: 'Sapas Mons', lat: 8.5, lon: 188.3, weight: 0.9, period: 28, heightFrac: 0.2, phase: 6.0 },
+            { name: 'Rhea Mons', lat: 32.4, lon: 282.2, weight: 0.75, period: 32, heightFrac: 0.2, phase: 12.0 },
+            { name: 'Idunn Mons', lat: -46.5, lon: 214.5, weight: 1.0, period: 24, heightFrac: 0.2, phase: 3.0 }
+        ]
+    },
+    Enceladus: {
+        hasHotspots: false,
+        hasPlumes: true,
+        atmosphereScale: 1.55,       // Cassini-scale water jets vs small R
+        intensity: 0.32,
+        activityDuty: 0.55,          // near-continuous tiger-stripe activity
+        style: 1,
+        plumeColor: 0xc8e8ff,        // ice / water vapor
+        vents: [
+            // South polar tiger stripes — cluster near S pole
+            { name: 'Baghdad', lat: -78, lon: 30, weight: 1.0, period: 12, heightFrac: 0.9, phase: 0.0 },
+            { name: 'Cairo', lat: -82, lon: 90, weight: 0.95, period: 11, heightFrac: 0.85, phase: 2.0 },
+            { name: 'Damascus', lat: -80, lon: 150, weight: 1.0, period: 13, heightFrac: 0.95, phase: 4.5 },
+            { name: 'Alexandria', lat: -76, lon: 210, weight: 0.9, period: 12, heightFrac: 0.8, phase: 7.0 }
+        ]
+    },
+    Triton: {
+        hasHotspots: false,
+        hasPlumes: true,
+        atmosphereScale: 1.03,       // real ~8 km is tiny; slight boost for visibility
+        intensity: 0.18,
+        activityDuty: 0.22,
+        style: 2,
+        plumeColor: 0x6a6058,        // dark N2 dust
+        vents: [
+            { name: 'Hili', lat: -57, lon: 35, weight: 0.9, period: 20, heightFrac: 0.85, phase: 0.0 },
+            { name: 'Mahilani', lat: -62, lon: 80, weight: 0.8, period: 22, heightFrac: 0.75, phase: 5.0 },
+            { name: 'Zener', lat: -70, lon: 140, weight: 0.75, period: 18, heightFrac: 0.7, phase: 10.0 }
+        ]
+    },
+    Europa: {
+        hasHotspots: false,
+        hasPlumes: true,
+        atmosphereScale: 1.12,       // putative ~200 km / R
+        intensity: 0.16,
+        activityDuty: 0.10,          // rare / transient
+        style: 1,
+        plumeColor: 0xdcefff,
+        vents: [
+            { name: 'SP candidate', lat: -75, lon: 180, weight: 0.85, period: 40, heightFrac: 0.9, phase: 0.0 },
+            { name: 'Eq candidate', lat: -15, lon: 90, weight: 0.55, period: 55, heightFrac: 0.7, phase: 18.0 }
+        ]
+    }
+};
+
+/** Three.js UV: v=0 north, v=1 south (matches GRS lightning convention). */
+function latLonToUv(latDeg, lonDeg) {
+    const u = ((lonDeg % 360) + 360) % 360 / 360;
+    const v = 0.5 - latDeg / 180;
+    return new THREE.Vector2(u, THREE.MathUtils.clamp(v, 0, 1));
+}
+
+/** Local unit direction matching Three.js SphereGeometry (Y = north). */
+function latLonToLocalDir(latDeg, lonDeg) {
+    const lat = latDeg * Math.PI / 180;
+    const lon = lonDeg * Math.PI / 180;
+    const phi = Math.PI * 0.5 - lat; // 0 at north pole
+    const sinPhi = Math.sin(phi);
+    // Three.js SphereGeometry: x = -sin(phi)*cos(theta), y = cos(phi), z = sin(phi)*sin(theta)
+    const x = -sinPhi * Math.cos(lon);
+    const y = Math.cos(phi);
+    const z = sinPhi * Math.sin(lon);
+    return new THREE.Vector3(x, y, z).normalize();
+}
+
+function getVolcanicProfile(bodyName) {
+    return VOLCANIC_PROFILES[bodyName] || null;
+}
+
+function bodyHasVolcanicActivity(bodyName) {
+    return !!getVolcanicProfile(bodyName);
+}
+
+function createEmptyVolcanicHotspotUniforms() {
+    const ventUV = [];
+    const ventStrength = [];
+    for (let i = 0; i < MAX_VOLCANIC_VENTS; i++) {
+        ventUV.push(new THREE.Vector2(0, 0));
+        ventStrength.push(0);
+    }
+    return {
+        enableVolcanicHotspots: { value: 0.0 },
+        ventCount: { value: 0 },
+        ventUV: { value: ventUV },
+        ventStrength: { value: ventStrength },
+        hotspotColor: { value: new THREE.Color(0x000000) },
+        hotspotIntensity: { value: 0.0 },
+        hotspotCoreScale: { value: 900.0 },
+        time: { value: 0.0 }
+    };
+}
+
+function fillHotspotUniformsFromProfile(uniforms, profile) {
+    if (!uniforms || !profile || !profile.hasHotspots || !profile.vents) {
+        if (uniforms && uniforms.enableVolcanicHotspots) {
+            uniforms.enableVolcanicHotspots.value = 0.0;
+            uniforms.ventCount.value = 0;
+        }
+        return;
+    }
+    const n = Math.min(profile.vents.length, MAX_VOLCANIC_VENTS);
+    uniforms.enableVolcanicHotspots.value = isShaderOn('shaderIoGlow') ? 1.0 : 0.0;
+    uniforms.ventCount.value = n;
+    uniforms.hotspotColor.value.set(profile.hotspotColor || 0xff5520);
+    uniforms.hotspotIntensity.value = profile.hotspotIntensity != null ? profile.hotspotIntensity : 0.7;
+    uniforms.hotspotCoreScale.value = profile.hotspotCoreScale != null ? profile.hotspotCoreScale : 900;
+    for (let i = 0; i < MAX_VOLCANIC_VENTS; i++) {
+        if (i < n) {
+            const v = profile.vents[i];
+            uniforms.ventUV.value[i].copy(latLonToUv(v.lat, v.lon));
+            uniforms.ventStrength.value[i] = v.weight != null ? v.weight : 1.0;
+        } else {
+            uniforms.ventStrength.value[i] = 0;
+        }
+    }
+}
 
 function setAtmosphereEffectsVisible(visible) {
     atmosphereEffectsVisible = !!visible;
@@ -2205,8 +2534,13 @@ function createEarthMaterial(surfaceTexture, normalMap, specularMap, nightMap) {
 
 function createSoftPlanetMaterial(oPlanet, surfaceTexture, normalMap, specularMap) {
     const dummy = new THREE.Texture();
-    const isIo = oPlanet.name === 'Io';
-    const ioGlow = isIo && isShaderOn('shaderIoGlow');
+    const profile = getVolcanicProfile(oPlanet.name);
+    const hotspotsOn = !!(profile && profile.hasHotspots && isShaderOn('shaderIoGlow'));
+    const hotspotUniforms = createEmptyVolcanicHotspotUniforms();
+    if (hotspotsOn) {
+        fillHotspotUniformsFromProfile(hotspotUniforms, profile);
+    }
+
     return new THREE.ShaderMaterial({
         uniforms: {
             map: { value: surfaceTexture },
@@ -2218,8 +2552,10 @@ function createSoftPlanetMaterial(oPlanet, surfaceTexture, normalMap, specularMa
             hasNormalMap: { value: normalMap ? 1.0 : 0.0 },
             hasSpecularMap: { value: specularMap ? 1.0 : 0.0 },
             shininess: { value: 20.0 },
-            emissiveColor: { value: new THREE.Color(ioGlow ? 0xff6622 : 0x000000) },
-            emissiveIntensity: { value: ioGlow ? 0.22 : 0.0 },
+            // No whole-disk Io tint — hotspots replace that look when volcanic option is on
+            emissiveColor: { value: new THREE.Color(0x000000) },
+            emissiveIntensity: { value: 0.0 },
+            ...hotspotUniforms,
             ...createMoonShadowUniforms()
         },
         vertexShader: ss_shaders.advancedPlanetVertex,
@@ -2231,6 +2567,8 @@ function createMaterialFromTextures( oPlanet, surfaceTexture, normalMap, specula
 {
     let material = null;
     const normalScale = 1;
+    const volcanicOn = isShaderOn('shaderIoGlow') && bodyHasVolcanicActivity(oPlanet.name);
+    const needsHotspotSurface = volcanicOn && getVolcanicProfile(oPlanet.name).hasHotspots;
 
     // Advanced Earth path (day/night + soft lighting + moon umbra)
     if (oPlanet.name === 'Earth' && surfaceTexture && settings.areShadersEnabled === 'ON' &&
@@ -2238,10 +2576,9 @@ function createMaterialFromTextures( oPlanet, surfaceTexture, normalMap, specula
         return createEarthMaterial(surfaceTexture, normalMap, specularMap, nightMap);
     }
 
-    // Soft terminator / Io glow / moon umbra for textured bodies
+    // Soft terminator / volcanic hotspots / moon umbra for textured bodies
     if (surfaceTexture && settings.areShadersEnabled === 'ON' &&
-        (isShaderOn('shaderSoftLighting') || isShaderOn('shaderMoonShadows') ||
-         (oPlanet.name === 'Io' && isShaderOn('shaderIoGlow')))) {
+        (isShaderOn('shaderSoftLighting') || isShaderOn('shaderMoonShadows') || needsHotspotSurface)) {
         return createSoftPlanetMaterial(oPlanet, surfaceTexture, normalMap, specularMap);
     }
 
@@ -2269,22 +2606,82 @@ function createMaterialFromTextures( oPlanet, surfaceTexture, normalMap, specula
                 normalScale: new THREE.Vector2(normalScale, normalScale), // Strength of normal effect (adjustable)
                 });
         }
-
-        // Io volcanic glow without full soft-planet shader path
-        if (oPlanet.name === 'Io' && isShaderOn('shaderIoGlow') && material.emissive) {
-            material.emissive = new THREE.Color(0xff5522);
-            material.emissiveIntensity = 0.25;
-        }
+        // No whole-disk volcanic emissive on Phong fallback (hotspots need soft-planet path)
     }
     else
     {
         material = new THREE.MeshPhongMaterial({ color: oPlanet.color });
-        if (oPlanet.name === 'Io' && isShaderOn('shaderIoGlow')) {
-            material.emissive = new THREE.Color(0xff5522);
-            material.emissiveIntensity = 0.25;
-        }
     }
     return material;
+}
+
+/**
+ * Compact co-rotating plume shell for Io / Enceladus / Triton / Europa.
+ * Child of surface mesh. Heights and colors come from VOLCANIC_PROFILES.
+ */
+function createVolcanicActivityMesh(celestialBody) {
+    const profile = getVolcanicProfile(celestialBody.name);
+    if (!profile || !profile.hasPlumes || !profile.vents || !profile.vents.length) return null;
+    if (!ss_shaders.volcanicPlumeVertex || !ss_shaders.volcanicPlumeFragment) return null;
+
+    const surfaceR = celestialBody.radius * nHardCodeScaleFactor;
+    const atmosphereScale = profile.atmosphereScale || 1.08;
+    const outerR = surfaceR * atmosphereScale;
+    const geo = new THREE.SphereGeometry(outerR, 64, 64);
+
+    const ventDirs = [];
+    const ventWeight = [];
+    const ventPeriod = [];
+    const ventPhase = [];
+    const ventHeightFrac = [];
+    const n = Math.min(profile.vents.length, MAX_VOLCANIC_VENTS);
+    for (let i = 0; i < MAX_VOLCANIC_VENTS; i++) {
+        if (i < n) {
+            const v = profile.vents[i];
+            ventDirs.push(latLonToLocalDir(v.lat, v.lon));
+            ventWeight.push(v.weight != null ? v.weight : 1.0);
+            ventPeriod.push(v.period != null ? v.period : 16.0);
+            ventPhase.push(v.phase != null ? v.phase : i * 3.1);
+            ventHeightFrac.push(v.heightFrac != null ? v.heightFrac : 0.7);
+        } else {
+            ventDirs.push(new THREE.Vector3(0, 1, 0));
+            ventWeight.push(0);
+            ventPeriod.push(20);
+            ventPhase.push(0);
+            ventHeightFrac.push(0.5);
+        }
+    }
+
+    const mat = new THREE.ShaderMaterial({
+        uniforms: {
+            time: { value: 0.0 },
+            intensity: { value: profile.intensity != null ? profile.intensity : 0.25 },
+            planetRadius: { value: surfaceR },
+            atmosphereScale: { value: atmosphereScale },
+            ventCount: { value: n },
+            ventDirs: { value: ventDirs },
+            ventWeight: { value: ventWeight },
+            ventPeriod: { value: ventPeriod },
+            ventPhase: { value: ventPhase },
+            ventHeightFrac: { value: ventHeightFrac },
+            style: { value: profile.style != null ? profile.style : 0 },
+            plumeColor: { value: new THREE.Color(profile.plumeColor || 0xffffff) },
+            activityDuty: { value: profile.activityDuty != null ? profile.activityDuty : 0.25 }
+        },
+        vertexShader: ss_shaders.volcanicPlumeVertex,
+        fragmentShader: ss_shaders.volcanicPlumeFragment,
+        transparent: true,
+        depthWrite: false,
+        depthTest: true,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'volcanicPlumes';
+    mesh.renderOrder = 4;
+    mesh.frustumCulled = true;
+    return mesh;
 }
 
 function createRingShaderMaterial(ringTexture, planetRadiusScaled) {
@@ -2811,7 +3208,7 @@ function createSunFlareMesh(starBody) {
     mesh.name = 'sunFlares';
     mesh.renderOrder = 2;
     mesh.frustumCulled = true;
-    // Dedicated layer so we can render flares alone at half-res when zoomed in
+    // Dedicated layer so we can render flares alone at half/quarter-res when zoomed in
     mesh.layers.set(LAYER_SUN_FLARES);
     mesh.userData.flareOuterRadius = outerR;
     mesh.userData.flareAtmosphereScale = atmosphereScale;
@@ -2935,6 +3332,18 @@ function createSimpleCelestialBody(celestialBody) {
         });
         auroraRoot.visible = atmosphereEffectsVisible;
         simpleCelestialMesh.add(auroraRoot);
+    }
+
+    // Volcanic / cryovolcanic plumes (Io, Enceladus, Triton, Europa) — co-rotate with surface
+    if (isShaderOn('shaderIoGlow') && bodyHasVolcanicActivity(celestialBody.name)) {
+        const plumeMesh = createVolcanicActivityMesh(celestialBody);
+        if (plumeMesh) {
+            if (plumeMesh.material && plumeMesh.material.uniforms) {
+                advancedUniforms.push(plumeMesh.material.uniforms);
+            }
+            plumeMesh.visible = atmosphereEffectsVisible;
+            simpleCelestialMesh.add(plumeMesh);
+        }
     }
 
     // Jupiter Great Red Spot lightning — independent of aurora (always on when body exists)
@@ -5341,21 +5750,11 @@ function toggleFPSMode(enable) {
         updateThrottleIndicator(); // Initial update
         renderer.domElement.focus();
         console.log('Fly Mode Enabled with FlyControls');
-        //focusedPlanet = null;
-        //trackingPlanet = null;
+        // Hide vector overlays in flight; restore prior preference when leaving fly mode
+        vectorsVisibleBeforeFly = vectorsVisible;
         vectorsVisible = false;
-
-        radiusLine.visible = false;
-        velocityLine.visible = false;
-        angularMomentumLine.visible = false;
-        velocityCone.visible = false;
-        angularMomentumCone.visible = false;
-        radiusLabel.visible = false;
-        velocityLabel.visible = false;
-        angularMomentumLabel.visible = false;
-        axisMesh.visible = false;
-        
-        
+        applyVectorsVisibility();
+        updateHotkeyHints();
     } else {
         fpsControls.enabled = false;
         orbitControls.enabled = true;
@@ -5363,9 +5762,8 @@ function toggleFPSMode(enable) {
         crosshair.style.display = 'none';
         throttleIndicator.style.display = 'none'; // Hide throttle indicator
         console.log('Fly Mode Disabled, OrbitControls Active');
-        // Restore OrbitControls target
+        // Restore OrbitControls target (do not force vectors on — default is off)
         if (focusedPlanet && trackingPlanet) {
-            vectorsVisible = true;
             const mesh = focusedPlanet.mesh instanceof THREE.Group ? focusedPlanet.mesh.children[0] : focusedPlanet.mesh;
             const planetPos = new THREE.Vector3();
             mesh.getWorldPosition(planetPos);
@@ -5374,6 +5772,9 @@ function toggleFPSMode(enable) {
             orbitControls.target.set(0, 0, 0); // Default to Sun
         }
         orbitControls.update();
+        vectorsVisible = vectorsVisibleBeforeFly;
+        applyVectorsVisibility();
+        updateHotkeyHints();
     }
 }
 
@@ -5910,6 +6311,17 @@ function applyMoonTrailVisibility() {
     setCookie('moonTrailsVisible', moonTrailsVisible, 30);
 }
 
+function applyAsteroidTrailVisibility() {
+    celestialObjects.forEach(obj => {
+        if (obj.data.type === "asteroid" && obj.trailLine) {
+            obj.trailLine.visible = asteroidTrailsVisible && !asteroidOrbitsVisible;
+        }
+    });
+    const btn = document.getElementById('toggleAsteroidTrails');
+    if (btn) btn.textContent = asteroidTrailsVisible ? 'Hide Asteroid Trails' : 'Show Asteroid Trails';
+    setCookie('asteroidTrailsVisible', asteroidTrailsVisible, 30);
+}
+
 /** Key 6: toggle planet + moon orbits together */
 function togglePlanetMoonOrbits() {
     const next = !(planetOrbitsVisible || moonOrbitsVisible);
@@ -5919,13 +6331,16 @@ function togglePlanetMoonOrbits() {
     applyMoonOrbitVisibility();
 }
 
-/** Key 7: toggle planet + moon trails together */
+/** Key 7: toggle planet + moon + asteroid trails together */
 function togglePlanetMoonTrails() {
-    const next = !(planetTrailsVisible || moonTrailsVisible);
+    const next = !(planetTrailsVisible || moonTrailsVisible || asteroidTrailsVisible);
     planetTrailsVisible = next;
     moonTrailsVisible = next;
+    asteroidTrailsVisible = next;
     applyPlanetTrailVisibility();
     applyMoonTrailVisibility();
+    applyAsteroidTrailVisibility();
+    updateHotkeyHints();
 }
 
 document.getElementById('togglePlanetOrbits').addEventListener('click', function() {
@@ -5944,12 +6359,14 @@ document.getElementById('toggleMoonOrbits').addEventListener('click', function()
 document.getElementById('togglePlanetTrails').addEventListener('click', function() {
     planetTrailsVisible = !planetTrailsVisible;
     applyPlanetTrailVisibility();
+    updateHotkeyHints();
 });
 
 // Toggle Moon Trails
 document.getElementById('toggleMoonTrails').addEventListener('click', function() {
     moonTrailsVisible = !moonTrailsVisible;
     applyMoonTrailVisibility();
+    updateHotkeyHints();
 });
 
 /*document.getElementById('help').addEventListener('click', () => {
@@ -6338,7 +6755,9 @@ function rebuildAdvancedUniforms(obj) {
     obj.mesh.traverse(child => {
         if (!child.isMesh || !child.material || !child.material.uniforms) return;
         const u = child.material.uniforms;
-        if (u.sunDirection || u.ringMap || u.dayMap || u.softTerminator || u.intensity) {
+        // Include soft-planet (sunDirection/softTerminator), rings, auroras/plumes (intensity), hotspots (time only via soft)
+        if (u.sunDirection || u.ringMap || u.dayMap || u.softTerminator || u.intensity ||
+            u.enableVolcanicHotspots || u.ventDirs) {
             list.push(u);
         }
     });
@@ -6410,6 +6829,32 @@ function syncAuroraLive(obj) {
     }
 }
 
+function syncVolcanicActivityLive(obj) {
+    if (!obj.data || !bodyHasVolcanicActivity(obj.data.name)) return;
+    const planetMesh = obj.mesh.getObjectByName(obj.data.name) || obj.mesh.children[0];
+    if (!planetMesh || !planetMesh.isMesh) return;
+
+    let plumes = planetMesh.getObjectByName('volcanicPlumes');
+    const wantPlumes = isShaderOn('shaderIoGlow') &&
+        getVolcanicProfile(obj.data.name) &&
+        getVolcanicProfile(obj.data.name).hasPlumes;
+
+    if (wantPlumes) {
+        if (!plumes) {
+            const plumeMesh = createVolcanicActivityMesh(obj.data);
+            if (plumeMesh) {
+                plumeMesh.visible = atmosphereEffectsVisible;
+                planetMesh.add(plumeMesh);
+            }
+        } else {
+            plumes.visible = atmosphereEffectsVisible;
+        }
+    } else if (plumes) {
+        planetMesh.remove(plumes);
+        disposeMeshDeep(plumes);
+    }
+}
+
 function syncRingMaterialLive(obj) {
     if (!obj.textures || !obj.textures.ringTexture) return;
     const ringMesh = obj.mesh.getObjectByName('ring');
@@ -6465,6 +6910,7 @@ function syncCelestialObjectShadersLive(obj) {
         syncSurfaceMaterialLive(obj);
         syncRingMaterialLive(obj);
         syncAuroraLive(obj);
+        syncVolcanicActivityLive(obj);
         syncSunCoronaLive(obj);
         syncSunFlaresLive(obj);
         rebuildAdvancedUniforms(obj);
@@ -7002,21 +7448,76 @@ document.getElementById('infoDescription').addEventListener('click', () => {
     
 });*/
 
-let vectorsVisible = true; // Track vector visibility state
+let vectorsVisible = false; // Off by default; toggle with 9 / ⓥ button
+let vectorsVisibleBeforeFly = false; // restore after flight mode
+
+/** Apply current vectorsVisible flag to scene objects (no flip). */
+function applyVectorsVisibility() {
+    const show = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
+    if (typeof radiusLine !== 'undefined' && radiusLine) {
+        radiusLine.visible = show;
+        velocityLine.visible = show;
+        angularMomentumLine.visible = show;
+        velocityCone.visible = show;
+        angularMomentumCone.visible = show;
+        radiusLabel.visible = show;
+        velocityLabel.visible = show;
+        angularMomentumLabel.visible = show;
+        axisMesh.visible = show;
+    }
+    updateHotkeyHints();
+}
 
 function toggleVectorsVisible() {
     vectorsVisible = !vectorsVisible;
-    const show = vectorsVisible && focusedPlanet && focusedPlanet.data.name !== 'Sun';
-    radiusLine.visible = show;
-    velocityLine.visible = show;
-    angularMomentumLine.visible = show;
-    velocityCone.visible = show;
-    angularMomentumCone.visible = show;
-    radiusLabel.visible = show;
-    velocityLabel.visible = show;
-    angularMomentumLabel.visible = show;
-    axisMesh.visible = show;
+    applyVectorsVisibility();
 }
+
+/**
+ * PC-only top hotkey strip (hidden on mobile — not enough room).
+ * Covers trails (7), vectors/axis (9), orbital/flight mode (C);
+ * in flight mode also shows [ ] throttle steps.
+ */
+function updateHotkeyHints() {
+    const el = document.getElementById('hotkeyHints');
+    if (!el) return;
+    if (isMobileBool) {
+        el.style.display = 'none';
+        return;
+    }
+    el.style.display = 'flex';
+    const trailsOn = planetTrailsVisible || moonTrailsVisible || asteroidTrailsVisible;
+    const trailsPart = trailsOn
+        ? '7 hide trails'
+        : '7 show trails';
+    const vectorsPart = vectorsVisible
+        ? '9 hide vectors & axis'
+        : '9 show vectors & axis';
+    const inFlight = typeof isFPSMode !== 'undefined' && isFPSMode;
+    const modePart = inFlight
+        ? 'C orbital mode'
+        : 'C flight mode';
+    let html =
+        `<span>${trailsPart}</span>` +
+        `<span class="hotkey-sep">·</span>` +
+        `<span>${vectorsPart}</span>` +
+        `<span class="hotkey-sep">·</span>` +
+        `<span>${modePart}</span>`;
+    if (inFlight) {
+        html +=
+            `<span class="hotkey-sep">·</span>` +
+            `<span>[ −25% throttle</span>` +
+            `<span class="hotkey-sep">·</span>` +
+            `<span>] +25% throttle</span>`;
+    }
+    el.innerHTML = html;
+}
+
+// Alias for any older call sites
+function updateVectorsHint() { updateHotkeyHints(); }
+
+// Initial PC hint state
+updateHotkeyHints();
 
 function toggleTargetIndicator() {
     targetIndicatorVisible = !targetIndicatorVisible;
@@ -7454,13 +7955,8 @@ document.getElementById('toggleAsteroidOrbits').addEventListener('click', functi
 
 document.getElementById('toggleAsteroidTrails').addEventListener('click', function() {
     asteroidTrailsVisible = !asteroidTrailsVisible;
-    celestialObjects.forEach(obj => {
-        if (obj.data.type === "asteroid" && obj.trailLine) {
-            obj.trailLine.visible = asteroidTrailsVisible && !asteroidOrbitsVisible;
-        }
-    });
-    this.textContent = asteroidTrailsVisible ? 'Hide Asteroid Trails' : 'Show Asteroid Trails';
-    setCookie('asteroidTrailsVisible', asteroidTrailsVisible, 30);
+    applyAsteroidTrailVisibility();
+    updateHotkeyHints();
 });
 
 
@@ -7502,7 +7998,7 @@ document.addEventListener('keydown', (event) => {
 
         event.preventDefault(); // Prevent default browser behavior
     } else if (event.key === '0') {
-        // Toggle atmosphere shells, auroras, and GRS lightning — bare planet surface
+        // Toggle atmosphere shells, auroras, GRS lightning, sun flares, volcanic plumes
         toggleAtmosphereEffects();
         event.preventDefault();
     } else if (event.key === '6') {
@@ -7510,7 +8006,7 @@ document.addEventListener('keydown', (event) => {
         togglePlanetMoonOrbits();
         event.preventDefault();
     } else if (event.key === '7') {
-        // Toggle planet + moon trails
+        // Toggle planet + moon + asteroid trails
         togglePlanetMoonTrails();
         event.preventDefault();
     } else if (event.key === '8') {

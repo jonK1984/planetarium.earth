@@ -80,6 +80,25 @@ CHANGE LOG
 ----------
 ################################################################################
 2026-07-14
+S-00027
+  1. [.] solar_system.js — near-sun flight stability: restore adaptive half/quarter-res flare composite when the outer shell is large on screen or camera is inside (chooseFlareResScale); keep full-res depth path for limb peeks; full sunFlare shader quality unchanged
+  2. [.] shaders.js — comment only: document adaptive half/quarter-res zoom fill-rate for volumetric flares
+  3. [.] solar_system.js — sun glare / horizon rays: near-sun kill at ≤55M miles (soft ramp back in 55→90M mi); was 15→45M km
+  4. [.] solar_system.js — smooth near-sun flare scale switch: pre-alloc half+quarter RTs (no hot-path setSize), GPU warm clear, earlier enter thresholds + sticky hysteresis (removes ~1s hitch)
+  5. [js] TieFighterControls.js — double +/- throttle step (5→10; Shift fine 1→2)
+  6. [.] solar_system.html / README.md — version bump to v0.9.5 (beta)
+################################################################################
+################################################################################
+2026-07-14
+S-00026
+  1. [.] shaders.js — soft-planet localized volcanic IR/lava hotspots (fixed UV vents, slow pulse, night boost); compact ray-marched volcanicPlume vertex/fragment (narrow jets, rise/peak/decay, styles for silicate/SO2, ice, dark N2 dust)
+  2. [.] solar_system.js — VOLCANIC_PROFILES for Io, Venus, Enceladus, Triton, Europa (scientific height/duty/color); createVolcanicActivityMesh + syncVolcanicActivityLive; hotspot surface path for Io/Venus; remove whole-disk Io emissive tint; option label “Volcanic & Plume Activity” (cookie key shaderIoGlow kept); volcanicPlumes in ATMOSPHERE_EFFECT_NAMES (key 0)
+  3. [.] README.md / FILE_MANIFEST.txt — document volcanic & plume advanced-shader option and shader roles
+  4. [.] solar_system.js / solar_system.html / solar_system_style.css — vectors & axis off by default; PC-only top hotkey strip (7 trails, 9 vectors, C mode); do not force vectors on when leaving fly mode
+  5. [.] solar_system.js / solar_system.html — key 7 also toggles asteroid trails (with planet/moon); help table updated
+################################################################################
+################################################################################
+2026-07-14
 S-00025
   1. [.] solar_system.js / [js] OrbitControls.js / [.] solar_system.html — tracking UX polish + free orbit: skip camera reframe on same-body reselect; min orbit distance 2× radius while focused; replace focus wireframe cube with 4 blue corner triangles (key 8); keys 6/7 toggle planet+moon orbits/trails, 9 toggles vectors/axis; free 360° orbit via trackball-style offset+up rotation (no polar lock/flicker); reset camera.up on clear/reset; document keys in orbital controls help
 ################################################################################

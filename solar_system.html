@@ -12,6 +12,8 @@
     <div id="dateTimeLabel"></div>
     <div id="fpsCounter"></div>
     <div id="timeRateLabel"></div>
+    <!-- PC-only hotkey strip (hidden on mobile via CSS + JS) -->
+    <div id="hotkeyHints" class="desktop-only-hint" aria-live="polite">7 hide trails · 9 show vectors &amp; axis · C flight mode</div>
     <!-- Hamburger Menu -->
     <div id="menuContainer">
         <button id="menuToggle" class="hamburger button">☰</button>
@@ -390,7 +392,7 @@
                     <td>6 Key</td>
                 </tr>
                 <tr>
-                    <td>Toggle planet/moon trails</td>
+                    <td>Toggle planet/moon/asteroid trails</td>
                     <td>7 Key</td>
                 </tr>
                 <tr>
@@ -558,7 +560,7 @@
     <!-- Add About Popup at the bottom of the body, before  -->
     <div id="aboutPopup" class="popup" style="position: absolute; display: none; color: white; background: rgba(0, 0, 0, 0.8); padding: 20px; border-radius: 5px; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 500px; max-height: 80vh; z-index: 20;">
         <h3>planetarium.Earth</h3>
-        <p> v0.9.4 (beta)</p>
+        <p> v0.9.5 (beta)</p>
         <button id="closeAbout" class="button">Close</button>
         <div id="aboutContent" style="margin-top: 10px;">
             <p><strong>Author:</strong> Jon Kakaley</p>

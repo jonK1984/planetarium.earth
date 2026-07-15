@@ -20,7 +20,7 @@
 			this.object = object;
 			this.domElement = domElement; // API
 			this.enabled = true; // When false, ignore input and skip update (orbit mode)
-			this.movementSpeedMultiplier = 5;
+			this.movementSpeedMultiplier = 10;
 			this.movementSpeed = 1.0;
 			this.rollSpeed = 0.005;
 			this.dragToLook = false;
@@ -73,7 +73,7 @@
 
 					case 'ShiftLeft':
 					case 'ShiftRight':
-						this.movementSpeedMultiplier = 1;
+						this.movementSpeedMultiplier = 2;
 						break;
 
 					case 'Equal':
@@ -196,7 +196,7 @@
 
 					case 'ShiftLeft':
 					case 'ShiftRight':
-						this.movementSpeedMultiplier = 5;
+						this.movementSpeedMultiplier = 10;
 						break;
 
 					case 'KeyW':
