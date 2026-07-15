@@ -79,6 +79,14 @@ SUGGESTED PRACTICES
 CHANGE LOG
 ----------
 ################################################################################
+2026-07-15
+S-00024
+  1. [.] shaders.js — screen-space sun glare / lens flare (Gaussian diffraction spikes, circular aperture ghosts with chromatic fringes, view-dependent optical-axis train); precision highp + sub-LSB deband for smooth black blends
+  2. [.] solar_system.js — shaderSunGlare setting (“Sun Glare & Horizon Rays”); createSunGlarePipeline (half-float RT + additive blit); analytic computeSunOcclusion (sphere occluders); distance falloff (near-sun kill ≤15M km so volumetric flares stay clean; moderate AU fade for size/intensity); look-at / off-axis gains
+  3. [.] solar_system.js — solar plasma flares: replace no-depth half-res composite with depth-aware two-pass (scene+depth, then flares into same RT; bloom pre-flare scene, add occluded plasma after) so planets occlude flares at limb peeks; applySunFlareOcclusion full-umbra kill; explicit depthTest on sunGlow/sunFresnel
+  4. [.] VERSION_TRACKING.txt — log this session (S-00024)
+################################################################################
+################################################################################
 2026-07-14
 S-00023
   1. [.] shaders.js — sun flares: full 36-step march + heat haze retained; per-ejecta random width/height/footpoint (jetWidth cone, jetLenMax 0.30–0.88 shell, richer epoch seed)

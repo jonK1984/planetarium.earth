@@ -170,6 +170,7 @@ const SHADER_OPTION_KEYS = [
     'shaderSunTurbulence',
     'shaderSunCorona',
     'shaderSunFlares',
+    'shaderSunGlare',
     'shaderEarthNight',
     'shaderSoftLighting',
     'shaderRingLighting',
@@ -184,6 +185,7 @@ const SHADER_OPTION_LABELS = {
     shaderSunTurbulence: 'Sun Surface Turbulence',
     shaderSunCorona: 'Sun Corona & Fresnel',
     shaderSunFlares: 'Sun Plasma Flares & Ejecta',
+    shaderSunGlare: 'Sun Glare & Horizon Rays',
     shaderEarthNight: 'Earth Night Lights',
     shaderSoftLighting: 'Soft Terminator Lighting',
     shaderRingLighting: 'Ring Lighting & Shadows',
@@ -210,6 +212,7 @@ const defaultSettings = {
     shaderSunTurbulence: 'ON',
     shaderSunCorona: 'ON',
     shaderSunFlares: 'ON',
+    shaderSunGlare: 'ON',
     shaderEarthNight: 'ON',
     shaderSoftLighting: 'ON',
     shaderRingLighting: 'ON',
@@ -267,6 +270,7 @@ const settings = {
     shaderSunTurbulence: getCookie('shaderSunTurbulence') || defaultSettings.shaderSunTurbulence,
     shaderSunCorona: getCookie('shaderSunCorona') || defaultSettings.shaderSunCorona,
     shaderSunFlares: getCookie('shaderSunFlares') || defaultSettings.shaderSunFlares,
+    shaderSunGlare: getCookie('shaderSunGlare') || defaultSettings.shaderSunGlare,
     shaderEarthNight: getCookie('shaderEarthNight') || defaultSettings.shaderEarthNight,
     shaderSoftLighting: getCookie('shaderSoftLighting') || defaultSettings.shaderSoftLighting,
     shaderRingLighting: getCookie('shaderRingLighting') || defaultSettings.shaderRingLighting,
@@ -469,37 +473,41 @@ if (isShaderOn('shaderBloom')) {
 }
 
 // ---------------------------------------------------------------------------
-// Sun flares half-res composite (zoom fill-rate fix)
-// Soft additive plasma looks correct at ½ linear resolution; ~4× fewer ray-marches
-// when the shell is large on screen. Far away: full-res (cheap — few pixels).
+// Sun flares depth-aware composite
+//
+// Pass A: layer 0 scene → sceneRT (writes color + depth)
+// Pass B: layer 1 flares → flareRT sharing the SAME depthTexture
+//         clear COLOR only so planet depth occludes plasma at the limb
+// Pass C: bloom scene (optional), then additive depth-tested flares
+//         (flares after bloom avoids soft bloom bleed across the planet face)
+//
 // Layer 1 = sun flares only; main scene stays on layer 0.
 // ---------------------------------------------------------------------------
 const LAYER_SUN_FLARES = 1;
-let flareHalfResPipeline = null;
+let flareDepthPipeline = null;
 
-function createFlareHalfResPipeline() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    const pr = renderer.getPixelRatio();
-    const scale = 0.5;
-    const rtOpts = {
+function createFlareDepthPipeline() {
+    const w = Math.max(1, Math.floor(window.innerWidth * renderer.getPixelRatio()));
+    const h = Math.max(1, Math.floor(window.innerHeight * renderer.getPixelRatio()));
+
+    // Single full-res RT with depth. Pass A writes scene+depth; pass B draws
+    // flares into the SAME buffer without clearing depth so planets occlude plasma.
+    // (Sharing one DepthTexture across two FBOs is fragile in Three r132.)
+    const sceneRT = new THREE.WebGLRenderTarget(w, h, {
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        format: THREE.RGBAFormat,
+        depthBuffer: true,
+        stencilBuffer: false
+    });
+    // Optional capture of scene-before-flares for bloom-without-plasma (limb soft-bleed control)
+    const sceneOnlyRT = new THREE.WebGLRenderTarget(w, h, {
         minFilter: THREE.LinearFilter,
         magFilter: THREE.LinearFilter,
         format: THREE.RGBAFormat,
         depthBuffer: false,
         stencilBuffer: false
-    };
-    const flareRT = new THREE.WebGLRenderTarget(
-        Math.max(1, Math.floor(w * pr * scale)),
-        Math.max(1, Math.floor(h * pr * scale)),
-        rtOpts
-    );
-    // Full-res buffer when we need to composite before bloom (scene already in bloom.sceneRT)
-    const compositeRT = new THREE.WebGLRenderTarget(
-        Math.max(1, Math.floor(w * pr)),
-        Math.max(1, Math.floor(h * pr)),
-        { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat }
-    );
+    });
 
     const quadGeo = new THREE.PlaneGeometry(2, 2);
     const copyMat = new THREE.ShaderMaterial({
@@ -513,8 +521,7 @@ function createFlareHalfResPipeline() {
             }
         `,
         depthTest: false,
-        depthWrite: false,
-        transparent: false
+        depthWrite: false
     });
     const addMat = new THREE.ShaderMaterial({
         uniforms: { tDiffuse: { value: null } },
@@ -531,20 +538,27 @@ function createFlareHalfResPipeline() {
         depthWrite: false,
         transparent: true
     });
-    const combineMat = new THREE.ShaderMaterial({
+    // sceneOnly + (composited - sceneOnly) isn't available; we blit sceneOnly for bloom
+    // then add (full sceneRT - needs delta). Simpler: bloom sceneOnly, then add
+    // (sceneRT - sceneOnly) ≈ flares. Approximate via full sceneRT after flares for
+    // non-bloom path; for bloom: bloom sceneOnly then additive-blit flare contribution.
+    // Flare contribution = we re-render flares to a black RT… skip: use delta shader:
+    const flareExtractMat = new THREE.ShaderMaterial({
         uniforms: {
-            tScene: { value: null },
-            tFlares: { value: null }
+            tFull: { value: null },
+            tScene: { value: null }
         },
         vertexShader: ss_shaders.bloomCompositeVertex,
         fragmentShader: `
+            uniform sampler2D tFull;
             uniform sampler2D tScene;
-            uniform sampler2D tFlares;
             varying vec2 vUv;
             void main() {
-                vec4 scene = texture2D(tScene, vUv);
-                vec4 flares = texture2D(tFlares, vUv);
-                gl_FragColor = vec4(scene.rgb + flares.rgb, 1.0);
+                vec3 full = texture2D(tFull, vUv).rgb;
+                vec3 scn  = texture2D(tScene, vUv).rgb;
+                // Positive difference ≈ additive plasma only
+                vec3 flare = max(full - scn, 0.0);
+                gl_FragColor = vec4(flare, 1.0);
             }
         `,
         depthTest: false,
@@ -557,103 +571,116 @@ function createFlareHalfResPipeline() {
     const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
     return {
-        flareRT,
-        compositeRT,
+        sceneRT,
+        sceneOnlyRT,
         copyMat,
         addMat,
-        combineMat,
+        flareExtractMat,
         quadScene,
         quad,
         orthoCam,
         quadGeo,
-        scale,
         resize(nw, nh, npr) {
-            const fw = Math.max(1, Math.floor(nw * npr * this.scale));
-            const fh = Math.max(1, Math.floor(nh * npr * this.scale));
-            this.flareRT.setSize(fw, fh);
-            this.compositeRT.setSize(Math.max(1, Math.floor(nw * npr)), Math.max(1, Math.floor(nh * npr)));
+            const fw = Math.max(1, Math.floor(nw * npr));
+            const fh = Math.max(1, Math.floor(nh * npr));
+            this.sceneRT.setSize(fw, fh);
+            this.sceneOnlyRT.setSize(fw, fh);
         },
         dispose() {
-            this.flareRT.dispose();
-            this.compositeRT.dispose();
+            this.sceneRT.dispose();
+            this.sceneOnlyRT.dispose();
             this.copyMat.dispose();
             this.addMat.dispose();
-            this.combineMat.dispose();
+            this.flareExtractMat.dispose();
             this.quadGeo.dispose();
         },
         /**
-         * Render main scene without flares, flares at half-res, additive composite.
-         * Integrates with optional bloom pipeline.
+         * Two-pass depth-occluded flares on one RT, then present with optional bloom.
+         * Bloom uses pre-flare scene; depth-correct flares are added after bloom.
          */
         render(mainScene, mainCamera, bloom) {
-            // --- Scene without flares (layer 0 only) ---
-            mainCamera.layers.set(0);
-            if (bloom) {
-                renderer.setRenderTarget(bloom.sceneRT);
-                renderer.clear();
-                renderer.render(mainScene, mainCamera);
-            } else {
-                renderer.setRenderTarget(null);
-                renderer.clear();
-                renderer.render(mainScene, mainCamera);
-            }
-
-            // --- Flares only at half resolution ---
-            mainCamera.layers.set(LAYER_SUN_FLARES);
             const prevClear = new THREE.Color();
             renderer.getClearColor(prevClear);
             const prevAlpha = renderer.getClearAlpha();
-            renderer.setClearColor(0x000000, 0);
-            renderer.setRenderTarget(this.flareRT);
-            renderer.clear();
-            renderer.render(mainScene, mainCamera);
-            renderer.setClearColor(prevClear, prevAlpha);
+            const prevAutoClear = renderer.autoClear;
 
-            // Restore camera layers (default world + flares for next frame's non-half path)
+            renderer.autoClear = false;
+
+            // --- A: scene without flares (writes color + depth) ---
+            mainCamera.layers.set(0);
+            renderer.setRenderTarget(this.sceneRT);
+            renderer.setClearColor(prevClear, prevAlpha);
+            renderer.clear(true, true, true);
+            renderer.render(mainScene, mainCamera);
+
+            // Snapshot scene before flares (for bloom without plasma bleed)
+            if (bloom) {
+                this.quad.material = this.copyMat;
+                this.copyMat.uniforms.tDiffuse.value = this.sceneRT.texture;
+                renderer.setRenderTarget(this.sceneOnlyRT);
+                renderer.clear(true, true, true);
+                renderer.render(this.quadScene, this.orthoCam);
+            }
+
+            // --- B: flares into SAME RT; keep depth so planets occlude at the limb ---
+            mainCamera.layers.set(LAYER_SUN_FLARES);
+            renderer.setRenderTarget(this.sceneRT);
+            // no clear — depth from pass A remains; additive flare material draws on top
+            renderer.render(mainScene, mainCamera);
+
+            // Restore layers
             mainCamera.layers.set(0);
             mainCamera.layers.enable(LAYER_SUN_FLARES);
 
             if (bloom) {
-                // sceneRT + half-res flares → compositeRT, then bloom from compositeRT
-                this.combineMat.uniforms.tScene.value = bloom.sceneRT.texture;
-                this.combineMat.uniforms.tFlares.value = this.flareRT.texture;
-                this.quad.material = this.combineMat;
-                renderer.setRenderTarget(this.compositeRT);
-                renderer.clear();
-                renderer.render(this.quadScene, this.orthoCam);
-
-                // Bloom extract/blur/combine using composite as the "scene"
-                bloom.brightMat.uniforms.tDiffuse.value = this.compositeRT.texture;
+                // Bloom pre-flare scene only
+                bloom.brightMat.uniforms.tDiffuse.value = this.sceneOnlyRT.texture;
                 renderer.setRenderTarget(bloom.brightRT);
-                renderer.clear();
+                renderer.clear(true, true, true);
                 renderer.render(bloom.brightScene, bloom.orthoCam);
 
                 bloom.blurMat.uniforms.tDiffuse.value = bloom.brightRT.texture;
                 bloom.blurMat.uniforms.direction.value.set(1, 0);
                 renderer.setRenderTarget(bloom.blurRT);
-                renderer.clear();
+                renderer.clear(true, true, true);
                 renderer.render(bloom.blurScene, bloom.orthoCam);
 
                 bloom.blurMat.uniforms.tDiffuse.value = bloom.blurRT.texture;
                 bloom.blurMat.uniforms.direction.value.set(0, 1);
                 renderer.setRenderTarget(bloom.brightRT);
-                renderer.clear();
+                renderer.clear(true, true, true);
                 renderer.render(bloom.blurScene, bloom.orthoCam);
 
-                bloom.combineMat.uniforms.tDiffuse.value = this.compositeRT.texture;
+                bloom.combineMat.uniforms.tDiffuse.value = this.sceneOnlyRT.texture;
                 bloom.combineMat.uniforms.tBloom.value = bloom.brightRT.texture;
                 renderer.setRenderTarget(null);
+                renderer.clear(true, true, true);
                 renderer.render(bloom.combineScene, bloom.orthoCam);
-            } else {
-                // Additive upscale of flares onto the already-drawn scene
-                this.quad.material = this.addMat;
-                this.addMat.uniforms.tDiffuse.value = this.flareRT.texture;
-                renderer.setRenderTarget(null);
-                const prevAutoClear = renderer.autoClear;
-                renderer.autoClear = false;
+
+                // Add depth-correct plasma (full - sceneOnly) after bloom
+                this.quad.material = this.flareExtractMat;
+                this.flareExtractMat.uniforms.tFull.value = this.sceneRT.texture;
+                this.flareExtractMat.uniforms.tScene.value = this.sceneOnlyRT.texture;
+                // Reuse addMat path: extract to... actually draw extract with additive
+                // Switch to a one-shot: extract shader already outputs flare RGB; add it
+                const extractAsAdd = this.flareExtractMat;
+                extractAsAdd.blending = THREE.AdditiveBlending;
+                extractAsAdd.transparent = true;
+                extractAsAdd.depthTest = false;
+                extractAsAdd.depthWrite = false;
+                this.quad.material = extractAsAdd;
                 renderer.render(this.quadScene, this.orthoCam);
-                renderer.autoClear = prevAutoClear;
+            } else {
+                // Blit composited scene+flares to screen
+                this.quad.material = this.copyMat;
+                this.copyMat.uniforms.tDiffuse.value = this.sceneRT.texture;
+                renderer.setRenderTarget(null);
+                renderer.clear(true, true, true);
+                renderer.render(this.quadScene, this.orthoCam);
             }
+
+            renderer.autoClear = prevAutoClear;
+            renderer.setClearColor(prevClear, prevAlpha);
         }
     };
 }
@@ -671,50 +698,526 @@ function getSunFlareMesh() {
     return null;
 }
 
-/** True when the flare shell is large on screen — fill-rate dominates, use half-res. */
-function shouldRenderFlaresHalfRes(flareMesh) {
-    if (!flareMesh || !flareMesh.visible) return false;
-    if (typeof isShaderOn === 'function' && !isShaderOn('shaderSunFlares')) return false;
-    const localOuter = flareMesh.userData.flareOuterRadius;
-    if (!(localOuter > 0)) return false;
-
-    const worldPos = new THREE.Vector3();
-    flareMesh.getWorldPosition(worldPos);
-    const worldScale = new THREE.Vector3();
-    flareMesh.getWorldScale(worldScale);
-    const outerR = localOuter * worldScale.x;
-    const dist = Math.max(camera.position.distanceTo(worldPos), 1e-4);
-    const ang = Math.atan(outerR / dist);
-    const halfFov = (camera.fov * Math.PI / 180) * 0.5;
-    const screenFrac = ang / Math.max(halfFov, 1e-4);
-    // ~⅕ of vertical FOV and up → zoomed enough that fill-rate dominates
-    return screenFrac > 0.2;
+/**
+ * Full occult → kill flare intensity (fill-rate). Partial occult is handled
+ * per-pixel by the depth composite (do not globally dim the crescent).
+ */
+function applySunFlareOcclusion(flareMesh) {
+    if (!flareMesh || !flareMesh.material || !flareMesh.material.uniforms) return;
+    const u = flareMesh.material.uniforms;
+    if (!u.intensity) return;
+    const base = flareMesh.userData.flareBaseIntensity != null
+        ? flareMesh.userData.flareBaseIntensity
+        : 0.72;
+    const occ = computeSunOcclusion();
+    u.intensity.value = occ.fullyOcculted ? 0 : base;
 }
 
-function ensureFlareHalfResPipeline() {
-    if (!flareHalfResPipeline) {
-        flareHalfResPipeline = createFlareHalfResPipeline();
+function ensureFlareDepthPipeline() {
+    if (!flareDepthPipeline) {
+        flareDepthPipeline = createFlareDepthPipeline();
     }
-    return flareHalfResPipeline;
+    return flareDepthPipeline;
+}
+
+/** True when volumetric flares should use the depth-aware two-pass composite. */
+function shouldUseFlareDepthComposite(flareMesh) {
+    if (!flareMesh || !flareMesh.visible) return false;
+    if (typeof isShaderOn === 'function' && !isShaderOn('shaderSunFlares')) return false;
+    if (flareMesh.material && flareMesh.material.uniforms && flareMesh.material.uniforms.intensity) {
+        if (flareMesh.material.uniforms.intensity.value < 0.001) return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Screen-space sun glare / horizon sunrays (mode-agnostic: orbit + flight)
+// Analytic sphere occlusion of the camera→sun ray; procedural additive pass.
+// ---------------------------------------------------------------------------
+const SUN_GLARE_MAX_OCCLUDERS = 12;
+const SUN_GLARE_BASE_INTENSITY = 0.50;
+/** 1 AU in km (same constant used elsewhere in this file). */
+const SUN_GLARE_AU_KM = 1.496e8;
+/**
+ * Near-sun kill zone: fully off at/inside 15M km so volumetric solar flares stay clean.
+ * Soft ramp up to full by ~45M km (~0.3 AU).
+ */
+const SUN_GLARE_NEAR_OFF_KM = 15e6;
+const SUN_GLARE_NEAR_FULL_KM = 45e6;
+/**
+ * Distance falloff: shrinks/dims when zooming out, but stays readable mid-system.
+ * Middle ground — not a hard cliff, not a fixed screen stamp.
+ */
+const SUN_GLARE_DIST_REF_AU = 5.0;       // strong through inner + gas-giant range
+const SUN_GLARE_DIST_POWER = 0.62;      // moderate fade with distance
+const SUN_GLARE_DIST_INTENSITY_MIN = 0.18; // still visible far out, just quieter
+const SUN_GLARE_DIST_SIZE_MIN = 0.22;   // smaller when zoomed out, not tiny
+const SUN_GLARE_DIST_SIZE_POWER = 0.55;
+let sunGlarePipeline = null;
+
+// Scratch vectors (avoid per-frame alloc)
+const _glareSunWorld = new THREE.Vector3(0, 0, 0);
+const _glareCamPos = new THREE.Vector3();
+const _glareToSun = new THREE.Vector3();
+const _glareToBody = new THREE.Vector3();
+const _glareBodyPos = new THREE.Vector3();
+const _glareNdc = new THREE.Vector3();
+const _glareViewDir = new THREE.Vector3();
+const _glareOccluderScratch = [];
+
+function createSunGlarePipeline() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const pr = renderer.getPixelRatio();
+    const fw = Math.max(1, Math.floor(w * pr));
+    const fh = Math.max(1, Math.floor(h * pr));
+    const quadGeo = new THREE.PlaneGeometry(2, 2);
+
+    // Half-float offscreen buffer so long soft rays aren't quantized mid-gradient
+    // before additive composite (reduces contour banding on black).
+    const rtType = (THREE.HalfFloatType !== undefined) ? THREE.HalfFloatType
+        : (THREE.FloatType !== undefined ? THREE.FloatType : THREE.UnsignedByteType);
+    const glareRT = new THREE.WebGLRenderTarget(fw, fh, {
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        format: THREE.RGBAFormat,
+        type: rtType,
+        depthBuffer: false,
+        stencilBuffer: false
+    });
+
+    const mat = new THREE.ShaderMaterial({
+        uniforms: {
+            sunUV: { value: new THREE.Vector2(0.5, 0.5) },
+            intensity: { value: 0.0 },
+            rimBoost: { value: 0.0 },
+            sunSize: { value: 0.02 },
+            flareScale: { value: 1.0 }, // spatial scale of spikes/ghosts (shrinks with distance)
+            resolution: { value: new THREE.Vector2(fw, fh) },
+            time: { value: 0.0 }
+        },
+        vertexShader: ss_shaders.sunGlareVertex,
+        fragmentShader: ss_shaders.sunGlareFragment,
+        // Write into float RT with replace (full precision gradient), then additive blit
+        blending: THREE.NoBlending,
+        depthTest: false,
+        depthWrite: false,
+        transparent: false
+    });
+    const blitMat = new THREE.ShaderMaterial({
+        uniforms: { tDiffuse: { value: null } },
+        vertexShader: ss_shaders.bloomCompositeVertex,
+        fragmentShader: `
+            precision highp float;
+            uniform sampler2D tDiffuse;
+            varying vec2 vUv;
+            void main() {
+                vec4 c = texture2D(tDiffuse, vUv);
+                gl_FragColor = c;
+            }
+        `,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true
+    });
+
+    const sceneGlare = new THREE.Scene();
+    const quad = new THREE.Mesh(quadGeo, mat);
+    sceneGlare.add(quad);
+    const blitScene = new THREE.Scene();
+    const blitQuad = new THREE.Mesh(quadGeo, blitMat);
+    blitScene.add(blitQuad);
+    const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    return {
+        mat,
+        blitMat,
+        glareRT,
+        scene: sceneGlare,
+        blitScene,
+        orthoCam,
+        quadGeo,
+        resize(nw, nh, npr) {
+            const rtw = Math.max(1, Math.floor(nw * npr));
+            const rth = Math.max(1, Math.floor(nh * npr));
+            this.glareRT.setSize(rtw, rth);
+            this.mat.uniforms.resolution.value.set(rtw, rth);
+        },
+        dispose() {
+            this.mat.dispose();
+            this.blitMat.dispose();
+            this.glareRT.dispose();
+            this.quadGeo.dispose();
+        },
+        render() {
+            const prevAutoClear = renderer.autoClear;
+            const prevClear = new THREE.Color();
+            renderer.getClearColor(prevClear);
+            const prevAlpha = renderer.getClearAlpha();
+
+            // 1) Evaluate glare into high-precision RT (black clear)
+            renderer.autoClear = false;
+            renderer.setClearColor(0x000000, 0);
+            renderer.setRenderTarget(this.glareRT);
+            renderer.clear(true, true, true);
+            renderer.render(this.scene, this.orthoCam);
+
+            // 2) Additive composite onto the backbuffer
+            renderer.setRenderTarget(null);
+            renderer.setClearColor(prevClear, prevAlpha);
+            this.blitMat.uniforms.tDiffuse.value = this.glareRT.texture;
+            renderer.render(this.blitScene, this.orthoCam);
+
+            renderer.autoClear = prevAutoClear;
+        }
+    };
+}
+
+function ensureSunGlarePipeline() {
+    if (!sunGlarePipeline) {
+        sunGlarePipeline = createSunGlarePipeline();
+    }
+    return sunGlarePipeline;
+}
+
+function applySunGlareLive() {
+    if (isShaderOn('shaderSunGlare')) {
+        ensureSunGlarePipeline().resize(
+            window.innerWidth,
+            window.innerHeight,
+            renderer.getPixelRatio()
+        );
+    } else if (sunGlarePipeline) {
+        sunGlarePipeline.dispose();
+        sunGlarePipeline = null;
+    }
+}
+
+/**
+ * Angular radius of a sphere as seen from the camera (radians).
+ */
+function angularRadiusFromCamera(camPos, bodyPos, radius) {
+    const dist = camPos.distanceTo(bodyPos);
+    if (dist <= radius * 1.001) return Math.PI * 0.5;
+    return Math.asin(Math.min(1, radius / dist));
+}
+
+/**
+ * Fraction of the sun disk occulted by a sphere, plus a limb "rim" score.
+ * Uses angular separation between body center and sun as seen from camera.
+ * Returns { visibilityFactor 0..1 remaining, rim 0..1, deepUmbra bool }.
+ */
+function sunOcclusionBySphere(camPos, sunPos, sunAngRad, bodyPos, bodyRadius) {
+    const toSun = _glareToSun.copy(sunPos).sub(camPos);
+    const distSun = toSun.length();
+    if (distSun < 1e-8) {
+        return { visibilityFactor: 0, rim: 0, deepUmbra: true };
+    }
+    toSun.multiplyScalar(1 / distSun);
+
+    const toBody = _glareToBody.copy(bodyPos).sub(camPos);
+    const distBody = toBody.length();
+    if (distBody < 1e-8) {
+        return { visibilityFactor: 0, rim: 0, deepUmbra: true };
+    }
+
+    // Body must be between camera and sun (or overlapping the ray segment)
+    const along = toBody.dot(toSun);
+    if (along < 0) {
+        // Behind camera relative to sun direction
+        return { visibilityFactor: 1, rim: 0, deepUmbra: false };
+    }
+    // If body is farther than the sun, it cannot occult the sun
+    if (along > distSun + bodyRadius) {
+        return { visibilityFactor: 1, rim: 0, deepUmbra: false };
+    }
+
+    const bodyAng = angularRadiusFromCamera(camPos, bodyPos, bodyRadius);
+    // Angular separation sun vs body center
+    toBody.multiplyScalar(1 / distBody);
+    const cosSep = THREE.MathUtils.clamp(toSun.dot(toBody), -1, 1);
+    const sep = Math.acos(cosSep);
+
+    // Clear of limb
+    if (sep > bodyAng + sunAngRad) {
+        return { visibilityFactor: 1, rim: 0, deepUmbra: false };
+    }
+
+    // Fully covered (body angular radius engulfs sun disk)
+    if (sep + sunAngRad < bodyAng) {
+        // depthAng: how far the sun is buried past the limb in angular units
+        const depthAng = bodyAng - sep - sunAngRad;
+        const rimWidth = Math.max(sunAngRad * 2.2, 0.0015);
+        const rim = Math.max(0, 1 - depthAng / rimWidth);
+        // Deep umbra: disk fully hidden with no meaningful limb crest
+        const deepUmbra = depthAng > rimWidth * 0.25;
+        return { visibilityFactor: 0, rim: rim * rim, deepUmbra };
+    }
+
+    // Partial occultation — stronger kill as coverage increases
+    const overlap = (bodyAng + sunAngRad - sep) / Math.max(2 * sunAngRad, 1e-6);
+    const occ = THREE.MathUtils.clamp(overlap, 0, 1);
+    // Rim peaks when sun center is near the limb (sep ≈ bodyAng)
+    const limbDist = Math.abs(sep - bodyAng) / Math.max(sunAngRad * 2.5, 1e-6);
+    const rim = Math.max(0, 1 - limbDist) * (0.55 + 0.45 * occ);
+    return { visibilityFactor: 1 - occ, rim, deepUmbra: false };
+}
+
+function getSunRadiusWorld() {
+    let sunRadiusWorld = 0.0046 * nHardCodeScaleFactor;
+    if (typeof celestialObjects !== 'undefined' && celestialObjects) {
+        for (let i = 0; i < celestialObjects.length; i++) {
+            const o = celestialObjects[i];
+            if (o && o.data && o.data.type === 'star' && o.data.radius) {
+                sunRadiusWorld = o.data.radius * nHardCodeScaleFactor;
+                break;
+            }
+        }
+    }
+    return sunRadiusWorld;
+}
+
+/**
+ * Analytic sun-disk occlusion by nearby planet/moon spheres.
+ * Cached once per frame (shared by glare + flare half-res gating).
+ * @returns {{ visibility, rimBoost, fullyOcculted, partiallyOcculted, sunAngRad, sunRadiusWorld }}
+ */
+let _sunOccCache = null;
+let _sunOccFrameCounter = 0;
+
+function computeSunOcclusion() {
+    // Simple per-call-frame cache: increment counter at start of renderSolarSystemFrame
+    if (_sunOccCache && _sunOccCache._frame === _sunOccFrameCounter) {
+        return _sunOccCache;
+    }
+
+    camera.getWorldPosition(_glareCamPos);
+    _glareSunWorld.set(0, 0, 0);
+    const sunRadiusWorld = getSunRadiusWorld();
+    const sunAngRad = angularRadiusFromCamera(_glareCamPos, _glareSunWorld, sunRadiusWorld);
+
+    _glareOccluderScratch.length = 0;
+    if (typeof celestialObjects !== 'undefined' && celestialObjects) {
+        for (let i = 0; i < celestialObjects.length; i++) {
+            const obj = celestialObjects[i];
+            if (!obj || !obj.data || !obj.mesh) continue;
+            if (obj.data.type === 'star') continue;
+            if (!(obj.data.radius > 0)) continue;
+
+            obj.mesh.getWorldPosition(_glareBodyPos);
+            let scale = 1;
+            if (typeof getScaleForObject === 'function') {
+                scale = getScaleForObject(obj).finalPlanetScale || 1;
+            }
+            const R = obj.data.radius * nHardCodeScaleFactor * scale;
+            const dist = _glareCamPos.distanceTo(_glareBodyPos);
+            if (dist < 1e-6) continue;
+            const ang = Math.atan(R / dist);
+            // Skip tiny on-screen bodies (~0.15° ≈ 0.0026 rad)
+            if (ang < 0.0026) continue;
+
+            _glareOccluderScratch.push({
+                x: _glareBodyPos.x,
+                y: _glareBodyPos.y,
+                z: _glareBodyPos.z,
+                R,
+                ang
+            });
+        }
+    }
+
+    _glareOccluderScratch.sort((a, b) => b.ang - a.ang);
+    if (_glareOccluderScratch.length > SUN_GLARE_MAX_OCCLUDERS) {
+        _glareOccluderScratch.length = SUN_GLARE_MAX_OCCLUDERS;
+    }
+
+    let visibility = 1;
+    let rimBoost = 0;
+    let anyDeep = false;
+    for (let i = 0; i < _glareOccluderScratch.length; i++) {
+        const o = _glareOccluderScratch[i];
+        _glareBodyPos.set(o.x, o.y, o.z);
+        const res = sunOcclusionBySphere(
+            _glareCamPos,
+            _glareSunWorld,
+            sunAngRad,
+            _glareBodyPos,
+            o.R
+        );
+        visibility = Math.min(visibility, res.visibilityFactor);
+        rimBoost = Math.max(rimBoost, res.rim);
+        if (res.deepUmbra) anyDeep = true;
+    }
+
+    // Fully occulted: disk gone and not a thin limb crest (or deep umbra)
+    const fullyOcculted = (visibility < 0.02 && rimBoost < 0.22) || anyDeep;
+    const partiallyOcculted = !fullyOcculted && visibility < 0.98;
+
+    _sunOccCache = {
+        _frame: _sunOccFrameCounter,
+        visibility,
+        rimBoost,
+        fullyOcculted,
+        partiallyOcculted,
+        sunAngRad,
+        sunRadiusWorld
+    };
+    return _sunOccCache;
+}
+
+/**
+ * Project sun, compute analytic occlusion / rim boost, write glare uniforms.
+ * Camera-mode agnostic (uses global `camera` only).
+ */
+function updateSunGlareUniforms(pipe) {
+    if (!pipe || !pipe.mat) return 0;
+
+    const u = pipe.mat.uniforms;
+    camera.getWorldPosition(_glareCamPos);
+    _glareSunWorld.set(0, 0, 0);
+
+    // Behind camera?
+    const camToSun = _glareToSun.copy(_glareSunWorld).sub(_glareCamPos);
+    camera.getWorldDirection(_glareViewDir);
+    const ahead = camToSun.dot(_glareViewDir);
+    if (ahead <= 0) {
+        u.intensity.value = 0;
+        u.rimBoost.value = 0;
+        return 0;
+    }
+
+    // NDC / UV of sun center
+    _glareNdc.copy(_glareSunWorld).project(camera);
+    const ndcX = _glareNdc.x;
+    const ndcY = _glareNdc.y;
+    const uvX = ndcX * 0.5 + 0.5;
+    const uvY = ndcY * 0.5 + 0.5;
+    u.sunUV.value.set(uvX, uvY);
+
+    // Soft off-screen falloff (rays may still enter from FOV edge)
+    const edge = 0.15;
+    const ox = Math.max(0, Math.abs(ndcX) - 1) / edge;
+    const oy = Math.max(0, Math.abs(ndcY) - 1) / edge;
+    const offScreen = Math.min(1, Math.sqrt(ox * ox + oy * oy));
+    const screenFade = 1 - THREE.MathUtils.clamp(offScreen, 0, 1);
+    if (screenFade < 0.001) {
+        u.intensity.value = 0;
+        u.rimBoost.value = 0;
+        return 0;
+    }
+
+    const occ = computeSunOcclusion();
+    const sunAngRad = occ.sunAngRad;
+    const camDist = Math.max(_glareCamPos.distanceTo(_glareSunWorld), 1e-4);
+    // Orbit scale factor maps sim units ≈ AU (same as body semi-major axes)
+    const distAU = camDist / Math.max(nHardCodeOrbitScaleFactor, 1e-6);
+    const distKm = distAU * SUN_GLARE_AU_KM;
+
+    // Close-up: fully kill glare by 15M km so ray-marched solar flares aren't washed out
+    if (distKm <= SUN_GLARE_NEAR_OFF_KM) {
+        u.intensity.value = 0;
+        u.rimBoost.value = 0;
+        u.flareScale.value = 0;
+        return 0;
+    }
+    // Smooth ramp 15M → 45M km (0 → 1)
+    const nearFade = THREE.MathUtils.clamp(
+        (distKm - SUN_GLARE_NEAR_OFF_KM) / Math.max(SUN_GLARE_NEAR_FULL_KM - SUN_GLARE_NEAR_OFF_KM, 1),
+        0,
+        1
+    );
+    // Smoothstep-ish ease
+    const nearFadeSmooth = nearFade * nearFade * (3 - 2 * nearFade);
+
+    // Planet-range falloff: slow so Jupiter (~5 AU) / Saturn (~9.5 AU) stay strong
+    const distIntensityRaw = Math.pow(
+        SUN_GLARE_DIST_REF_AU / (SUN_GLARE_DIST_REF_AU + distAU),
+        SUN_GLARE_DIST_POWER
+    );
+    const distIntensity = THREE.MathUtils.clamp(
+        distIntensityRaw,
+        SUN_GLARE_DIST_INTENSITY_MIN,
+        1.35
+    ) * nearFadeSmooth;
+    const distSizeRaw = Math.pow(
+        SUN_GLARE_DIST_REF_AU / (SUN_GLARE_DIST_REF_AU + distAU),
+        SUN_GLARE_DIST_SIZE_POWER
+    );
+    const flareScale = THREE.MathUtils.clamp(
+        distSizeRaw * (0.55 + 0.45 * nearFadeSmooth),
+        SUN_GLARE_DIST_SIZE_MIN * nearFadeSmooth,
+        1.15
+    );
+    u.flareScale.value = flareScale;
+
+    // sunSize in UV: angular photosphere size (shrinks with distance) × optical scale
+    const vFovRad = (camera.fov * Math.PI) / 180;
+    const sunSizeUv = (sunAngRad / Math.max(vFovRad, 1e-4)) * 0.55 * flareScale;
+    // Allow smaller far-out cores; only clamp extremes
+    u.sunSize.value = THREE.MathUtils.clamp(sunSizeUv, 0.0012, 0.12);
+
+    // --- Planet occlusion: never paint full flare through a blocking body ---
+    let intensity = 0;
+    let rimOut = 0;
+    if (occ.fullyOcculted) {
+        // Deep umbra / fully covered: no screen-space glare on the planet face
+        intensity = 0;
+        rimOut = 0;
+    } else if (occ.visibility < 0.04) {
+        // Thin limb crest only (disk just gone) — subtle, not a through-disk train
+        if (occ.rimBoost > 0.28) {
+            intensity = SUN_GLARE_BASE_INTENSITY * occ.rimBoost * 0.18 * screenFade * distIntensity;
+            rimOut = occ.rimBoost * 0.35;
+        }
+    } else {
+        // Partial or clear: scale by remaining sun disk; mild limb lift
+        intensity = SUN_GLARE_BASE_INTENSITY * occ.visibility * screenFade * distIntensity;
+        intensity *= 1 + occ.rimBoost * 0.75;
+        rimOut = occ.rimBoost * (0.4 + 0.6 * occ.visibility);
+    }
+
+    u.intensity.value = intensity;
+    u.rimBoost.value = rimOut;
+    u.time.value = (typeof performance !== 'undefined' ? performance.now() : 0) * 0.001;
+
+    return intensity;
+}
+
+function compositeSunGlare() {
+    if (typeof isShaderOn === 'function' && !isShaderOn('shaderSunGlare')) return;
+    const pipe = ensureSunGlarePipeline();
+    const intensity = updateSunGlareUniforms(pipe);
+    if (intensity < 0.001) return;
+    pipe.render();
 }
 
 function renderSolarSystemFrame() {
-    const flares = getSunFlareMesh();
-    const useHalf = shouldRenderFlaresHalfRes(flares);
+    // Invalidate analytic occlusion cache for this frame
+    _sunOccFrameCounter++;
 
-    if (useHalf) {
-        ensureFlareHalfResPipeline().render(scene, camera, bloomPipeline);
+    const flares = getSunFlareMesh();
+    if (flares) {
+        applySunFlareOcclusion(flares);
+    }
+
+    // Always depth-composite flares when active so limb partial occultation works
+    if (shouldUseFlareDepthComposite(flares)) {
+        ensureFlareDepthPipeline().render(scene, camera, bloomPipeline);
+        compositeSunGlare();
         return;
     }
 
-    // Full-res path: camera must see flare layer
+    // No flares (or fully occulted): standard scene path (layer 0 only)
     camera.layers.set(0);
-    camera.layers.enable(LAYER_SUN_FLARES);
     if (bloomPipeline) {
         bloomPipeline.render(scene, camera);
     } else {
         renderer.render(scene, camera);
     }
+    // Keep flare layer enabled for the next frame's picking / side updates
+    camera.layers.enable(LAYER_SUN_FLARES);
+    compositeSunGlare();
 }
 
 const isLogDepthBuffer = settings.useLogDepthBuffer === 'ON';
@@ -2190,6 +2693,7 @@ function getStarGlowMesh( starBody)
         side: THREE.BackSide,
         blending: THREE.AdditiveBlending,
         transparent: true,
+        depthTest: true,
         depthWrite: false
     });
 
@@ -2212,6 +2716,7 @@ function getStarFresnelMesh(starBody) {
         side: THREE.FrontSide,
         blending: THREE.AdditiveBlending,
         transparent: true,
+        depthTest: true,
         depthWrite: false
     });
     const mesh = new THREE.Mesh(geo, mat);
@@ -2235,10 +2740,11 @@ function createSunFlareMesh(starBody) {
     const atmosphereScale = 1.22;
     const outerR = surfaceR * atmosphereScale;
     const geo = new THREE.SphereGeometry(outerR, 96, 96);
+    const baseIntensity = 0.72;
     const mat = new THREE.ShaderMaterial({
         uniforms: {
             time: { value: 0.0 },
-            intensity: { value: 0.72 },
+            intensity: { value: baseIntensity },
             sunRadius: { value: surfaceR },
             atmosphereScale: { value: atmosphereScale }
         },
@@ -2258,6 +2764,7 @@ function createSunFlareMesh(starBody) {
     mesh.layers.set(LAYER_SUN_FLARES);
     mesh.userData.flareOuterRadius = outerR;
     mesh.userData.flareAtmosphereScale = atmosphereScale;
+    mesh.userData.flareBaseIntensity = baseIntensity;
     return mesh;
 }
 
@@ -5876,6 +6383,7 @@ function applyLiveRenderSettings() {
     renderer.setPixelRatio(window.devicePixelRatio * settings.pixelRatio);
     applyAnisotropicFilteringLive();
     applyBloomLive();
+    applySunGlareLive();
 
     if (typeof celestialObjects !== 'undefined' && celestialObjects.length) {
         celestialObjects.forEach(syncCelestialObjectShadersLive);
@@ -5885,8 +6393,11 @@ function applyLiveRenderSettings() {
     if (bloomPipeline) {
         bloomPipeline.resize(window.innerWidth, window.innerHeight, pr);
     }
-    if (flareHalfResPipeline) {
-        flareHalfResPipeline.resize(window.innerWidth, window.innerHeight, pr);
+    if (flareDepthPipeline) {
+        flareDepthPipeline.resize(window.innerWidth, window.innerHeight, pr);
+    }
+    if (sunGlarePipeline) {
+        sunGlarePipeline.resize(window.innerWidth, window.innerHeight, pr);
     }
 }
 
@@ -6682,8 +7193,11 @@ function onWindowResize() {
     if (bloomPipeline) {
         bloomPipeline.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
     }
-    if (flareHalfResPipeline) {
-        flareHalfResPipeline.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
+    if (flareDepthPipeline) {
+        flareDepthPipeline.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
+    }
+    if (sunGlarePipeline) {
+        sunGlarePipeline.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
     }
 }
 

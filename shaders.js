@@ -1917,6 +1917,231 @@ const bloomCombineFragment = `
 `;
 
 // ---------------------------------------------------------------------------
+// Screen-space sun glare / lens flare (camera optics)
+// Reference look: bright core, finite diffraction spikes, circular aperture
+// ghosts with chromatic fringes along the optical axis (screen-center line).
+// View-dependent: ghosts slide along sun→center as the camera orbits/pans;
+// off-axis gain opens the train when the sun leaves frame center.
+// Occlusion & rim boost are computed on CPU (analytic planet spheres).
+// Mode-agnostic (orbital + flight). Distance falloff via intensity/flareScale.
+// ---------------------------------------------------------------------------
+const sunGlareVertex = `
+    varying vec2 vUv;
+    void main() {
+        vUv = uv;
+        gl_Position = vec4(position.xy, 0.0, 1.0);
+    }
+`;
+
+const sunGlareFragment = `
+    // highp: mediump causes contour banding on long soft rays over black
+    precision highp float;
+
+    uniform vec2 sunUV;          // projected sun center in UV [0,1] (may be outside)
+    uniform float intensity;     // overall visibility * fade * base * distance
+    uniform float rimBoost;      // 0..1+ — peaks when sun is on a planetary limb
+    uniform float sunSize;       // approximate sun angular size in UV units
+    uniform float flareScale;    // spatial scale of spikes/ghosts (1 near, smaller far)
+    uniform vec2 resolution;     // screen size in pixels
+    uniform float time;
+    varying vec2 vUv;
+
+    // Soft filled disc (ghost body)
+    float softDisc(vec2 p, float radius, float softness) {
+        float d = length(p);
+        return 1.0 - smoothstep(radius * (1.0 - softness), radius, d);
+    }
+
+    // Thin ring (aperture iris edge) — pure Gaussian shell
+    float softRing(vec2 p, float radius, float width) {
+        float d = length(p);
+        float w = max(width, 1e-5);
+        float x = (d - radius) / w;
+        return exp(-0.5 * x * x);
+    }
+
+    // Hex-ish aperture falloff (cheap 6-lobe angular modulation on a disc)
+    float hexDisc(vec2 p, float radius, float softness) {
+        float d = length(p);
+        float body = 1.0 - smoothstep(radius * (1.0 - softness), radius, d);
+        float ang = atan(p.y, p.x);
+        float hex = 0.88 + 0.12 * cos(ang * 6.0);
+        return body * hex;
+    }
+
+    // Pure 2D Gaussian spike arm — C∞ smooth (no kinks / contour lines).
+    // halfWidth / halfLen are sigma-like scales in aspect-correct UV units.
+    float spikeArm(vec2 d, float angle, float halfWidth, float halfLen, float fScale) {
+        float ca = cos(angle);
+        float sa = sin(angle);
+        float along = d.x * ca + d.y * sa;
+        float across = -d.x * sa + d.y * ca;
+        float fs = max(fScale, 0.2);
+        float w = max(halfWidth * fs, 1e-5);
+        float l = max(halfLen * fs, 1e-5);
+        // Separable Gaussian: infinitely smooth blend into black
+        return exp(-0.5 * ((across * across) / (w * w) + (along * along) / (l * l)));
+    }
+
+    void main() {
+        if (intensity < 0.001) {
+            discard;
+        }
+
+        float aspect = resolution.x / max(resolution.y, 1.0);
+        float fs = clamp(flareScale, 0.2, 1.25);
+
+        // Aspect-correct UV so circles stay round
+        vec2 uv = vUv;
+        vec2 sun = sunUV;
+        vec2 p = uv - sun;
+        p.x *= aspect;
+        float r = length(p);
+
+        // Optical axis: ghosts sit on the line through sun and screen center.
+        vec2 center = vec2(0.5, 0.5);
+        vec2 toCenter = center - sun;
+        toCenter.x *= aspect;
+        float axisLen = length(toCenter);
+
+        float offAxis = axisLen;
+        float lookAtSun = 1.0 - smoothstep(0.10, 0.38, offAxis);
+        lookAtSun = pow(max(lookAtSun, 0.0), 1.35);
+        float trainOpen = smoothstep(0.02, 0.10, offAxis);
+        float ghostGain = mix(0.55, 1.0, trainOpen) * lookAtSun;
+        float spikeGain = mix(0.55, 1.0, lookAtSun) * mix(0.92, 1.05, trainOpen);
+        float anamGain = mix(0.7, 1.1, smoothstep(0.02, 0.22, abs(toCenter.x))) * lookAtSun;
+        float axisFade = smoothstep(0.02, 0.10, axisLen);
+
+        vec3 col = vec3(0.0);
+
+        float sz = max(sunSize, 0.0015);
+        float rim = clamp(rimBoost, 0.0, 2.0);
+        float gain = intensity * (1.0 + rim * 0.55);
+
+        // ---- 1) Core star + soft circular glow (Gaussian, smooth) ----
+        float core = exp(-0.5 * (r * r) / max(sz * sz * 0.55, 1e-8));
+        float glow = exp(-0.5 * (r * r) / max(sz * sz * 8.0, 1e-8)) * 0.50;
+        float aura = exp(-0.5 * (r * r) / max(0.008 * fs * fs, 1e-8)) * 0.10;
+        float halo = core * 1.35 + glow + aura;
+        float discWash = softDisc(p, (0.055 + sz * 2.0) * fs, 0.85) * 0.08;
+        float coreGain = gain * mix(0.95, 1.08, smoothstep(0.0, 0.4, offAxis));
+        col += vec3(1.0, 0.98, 0.95) * (halo * 1.05) * coreGain;
+        col += vec3(0.85, 0.92, 1.0) * discWash * coreGain;
+
+        float coreRing = softRing(p, (sz * 3.5 + 0.012) * fs, (0.008 + sz * 0.55) * fs);
+        col += vec3(0.55, 0.75, 1.0) * coreRing * 0.22 * coreGain;
+        col += vec3(1.0, 0.55, 0.25) * softRing(p, (sz * 2.2 + 0.008) * fs, 0.006 * fs) * 0.12 * coreGain;
+
+        // ---- 2) Diffraction spikes — compact Gaussians; length scales with fs (zoom-out) ----
+        // halfWidth / halfLen in UV (before flareScale). Keep arms short so they don't fill the frame.
+        float spikes = 0.0;
+        const float rot = 0.12;
+        spikes += spikeArm(p, rot + 0.0,            0.0028, 0.10, fs);
+        spikes += spikeArm(p, rot + 1.5707963,      0.0028, 0.10, fs);
+        spikes += spikeArm(p, rot + 0.7853982,      0.0024, 0.085, fs) * 0.65;
+        spikes += spikeArm(p, rot + 2.3561945,      0.0024, 0.085, fs) * 0.65;
+        spikes += spikeArm(p, rot + 0.35,           0.0020, 0.065, fs) * 0.22;
+        spikes += spikeArm(p, rot + 0.35 + 1.5708,  0.0020, 0.065, fs) * 0.22;
+        // Anamorphic streak — shorter/narrower, scales with fs
+        float anam = exp(-0.5 * (
+            (p.y * p.y) / max(pow(0.007 * fs, 2.0), 1e-8) +
+            (p.x * p.x) / max(pow(0.12 * fs, 2.0), 1e-8)
+        ));
+        spikes = spikes * 0.55 + anam * 0.32 * anamGain;
+        spikes *= (0.80 + rim * 0.30) * spikeGain;
+        col += vec3(0.96, 0.98, 1.0) * spikes * gain * 0.68;
+
+        // ---- 3) Aperture ghosts ----
+        float chroma = 0.004 + offAxis * 0.012;
+
+        for (int i = 0; i < 10; i++) {
+            float fi = float(i);
+            float t = 0.15 + fi * 0.20;
+            if (i == 1) t = -0.18;
+            if (i == 4) t = -0.38;
+
+            vec2 axisDirUv = vec2(toCenter.x / aspect, toCenter.y);
+            vec2 ghostUv = sun + axisDirUv * t;
+
+            vec2 chOffR = axisDirUv * chroma * (0.6 + 0.15 * fi);
+            vec2 chOffB = -axisDirUv * chroma * (0.5 + 0.12 * fi);
+
+            vec2 gp  = uv - ghostUv;            gp.x *= aspect;
+            vec2 gpR = uv - (ghostUv + chOffR); gpR.x *= aspect;
+            vec2 gpB = uv - (ghostUv + chOffB); gpB.x *= aspect;
+
+            float gRadius = (0.012 + abs(t) * 0.027 + (fi > 4.0 ? 0.010 : 0.0)) * fs;
+            gRadius *= mix(0.9, 1.05, smoothstep(0.05, 0.35, offAxis));
+            float gSoft = 0.55; // softer edge = fewer contour rings on black
+
+            float body  = hexDisc(gp, gRadius, gSoft);
+            float bodyR = hexDisc(gpR, gRadius * 0.95, gSoft);
+            float bodyB = hexDisc(gpB, gRadius * 1.02, gSoft);
+            float edge  = softRing(gp, gRadius * 0.92, gRadius * 0.22);
+
+            vec3 gCol;
+            if (mod(fi, 4.0) < 1.0) {
+                gCol = vec3(0.35, 0.55, 0.95);
+            } else if (mod(fi, 4.0) < 2.0) {
+                gCol = vec3(1.0, 0.45, 0.12);
+            } else if (mod(fi, 4.0) < 3.0) {
+                gCol = vec3(0.25, 0.75, 0.55);
+            } else {
+                gCol = vec3(0.7, 0.55, 0.95);
+            }
+
+            float gAlpha = body * 0.26 + edge * 0.38;
+            float onScreen = softDisc(
+                vec2((ghostUv.x - 0.5) * aspect, ghostUv.y - 0.5),
+                0.85, 0.25
+            );
+
+            float gWeight = gain * ghostGain * axisFade * onScreen * (0.75 + rim * 0.25);
+            col += vec3(gCol.r, 0.0, 0.0) * bodyR * 0.14 * gWeight;
+            col += vec3(0.0, gCol.g, 0.0) * body  * 0.18 * gWeight;
+            col += vec3(0.0, 0.0, gCol.b) * bodyB * 0.14 * gWeight;
+            col += gCol * gAlpha * gWeight;
+
+            if (i >= 2) {
+                float fringe = softRing(gp, gRadius * 1.05, gRadius * 0.10);
+                col += vec3(1.0, 0.35, 0.15) * fringe * 0.14 * gWeight;
+                col += vec3(0.3, 0.5, 1.0) * softRing(gp, gRadius * 0.72, gRadius * 0.08) * 0.10 * gWeight;
+            }
+        }
+
+        {
+            vec2 midUv = sun + vec2(toCenter.x / aspect, toCenter.y) * 1.0;
+            vec2 mp = uv - midUv;
+            mp.x *= aspect;
+            float big = softDisc(mp, 0.085 * fs * mix(0.85, 1.08, smoothstep(0.05, 0.28, offAxis)), 0.9) * 0.065;
+            col += vec3(0.4, 0.55, 0.85) * big * gain * ghostGain * axisFade;
+        }
+
+        {
+            vec2 farUv = sun + vec2(toCenter.x / aspect, toCenter.y) * 1.55;
+            vec2 fp = uv - farUv;
+            fp.x *= aspect;
+            float farG = hexDisc(fp, 0.038 * fs, 0.55) * 0.13
+                + softRing(fp, 0.042 * fs, 0.012 * fs) * 0.16;
+            col += vec3(0.55, 0.4, 0.9) * farG * gain * ghostGain * axisFade;
+        }
+
+        // Soft tone map
+        col = col / (1.0 + col * 0.55);
+        col = max(col, vec3(0.0));
+
+        // Sub-LSB triangular deband: breaks 8-bit contour lines without visible grain.
+        // (Interleaved gradient noise, amplitude < 1/255)
+        float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        col += (ign - 0.5) * (1.0 / 255.0);
+        col = max(col, vec3(0.0));
+
+        gl_FragColor = vec4(col, 1.0);
+    }
+`;
+
+// ---------------------------------------------------------------------------
 // Solar flares / plasma ejecta (WebGL 2.0) — ray-marched volumetric shell
 //
 // Random CME-style jets, magnetic prominence loops, and corona streamers
@@ -2388,5 +2613,7 @@ const ss_shaders = {
     bloomCompositeVertex: bloomCompositeVertex,
     bloomBrightFragment: bloomBrightFragment,
     bloomBlurFragment: bloomBlurFragment,
-    bloomCombineFragment: bloomCombineFragment
+    bloomCombineFragment: bloomCombineFragment,
+    sunGlareVertex: sunGlareVertex,
+    sunGlareFragment: sunGlareFragment
 };
