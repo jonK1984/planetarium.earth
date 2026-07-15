@@ -8,13 +8,24 @@ The newest entry always appears first.
 
 MAINTENANCE INSTRUCTIONS
 ------------------------
-When you make a meaningful change (application code, assets, or project docs):
+ONE S-##### BLOCK PER FULL WORK SESSION — NOT PER CODE EDIT.
 
-  1. Add a new block at the TOP of the CHANGE LOG section (below this header)
-     in this file (./VERSION_TRACKING.txt).
-  2. First line of the block: the date (YYYY-MM-DD).
-  3. Second line: the next session ID — scan the CHANGE LOG for the highest
-     existing S-##### and increment by 1 (first entry ever: S-00001).
+A "session" is one continuous agent/user work stint (the whole conversation or
+task arc), even if it includes many file edits, false starts, and follow-ups.
+Do NOT open a new S-##### for every patch, PR step, or mid-session tweak.
+
+When application code, assets, or project docs change during a session:
+
+  1. Check whether THIS session already has a block at the top of the CHANGE LOG.
+     - If YES: append or revise numbered lines under that same S-##### (same
+       date). Prefer updating the existing lines to reflect the final outcome
+       rather than logging every intermediate attempt.
+     - If NO: create ONE new block at the TOP of the CHANGE LOG (below this
+       header) in this file (./VERSION_TRACKING.txt).
+  2. First line of a new block: the date (YYYY-MM-DD).
+  3. Second line of a new block: the next session ID — scan the CHANGE LOG for
+     the highest existing S-##### and increment by 1 (first entry ever: S-00001).
+     Never mint a new S-##### mid-session.
   4. Below the session ID, add one or more numbered change lines:
        N. [directory] file — brief description of what changed
      Use 1, 2, 3, etc. within the session. Tag each line with the directory
@@ -26,9 +37,12 @@ When you make a meaningful change (application code, assets, or project docs):
        [textures_lo]    (or textures_md / textures_hi / textures_mx)
        [getting_started] onboarding media
   5. Keep descriptions brief (one line each) but specific enough to be useful
-     months later — mention file names and the gist of the change.
+     months later — mention file names and the gist of the change. Summarize
+     the net result of the session, not every intermediate edit.
   6. Wrap each entry in ##### separators (see format below).
-  7. Do NOT edit or renumber older entries.
+  7. Do NOT renumber older session IDs. You MAY edit the current (top) session
+     block while that session is still in progress. Do not rewrite history in
+     older completed session blocks except for obvious typos.
 
 Also update when relevant:
   - FILE_MANIFEST.txt in the repo root — if files are added/removed,
@@ -49,9 +63,12 @@ Reference syntax: S-##### #N  (e.g. S-00005 #2 = session 5, change 2).
 
 SUGGESTED PRACTICES
 -------------------
-  - One session block per work session; multiple numbered items if needed.
-  - Cross-directory work: single session entry with multiple tagged lines (do
-    not create duplicate session blocks for the same work session).
+  - Exactly one S-##### block per work session; multiple numbered items (#1, #2…)
+    for distinct outcomes within that session.
+  - Mid-session follow-ups (perf fix, then visual fix, then polish): same S-#####,
+    add/update numbered lines — do not create S-#####+1, +2, +3 for the same day
+    of continuous work.
+  - Cross-directory work: single session entry with multiple tagged lines.
   - Reference specific files.
   - For bug fixes, note symptom + fix.
   - For breaking changes, say so explicitly.
@@ -61,6 +78,13 @@ SUGGESTED PRACTICES
 
 CHANGE LOG
 ----------
+################################################################################
+2026-07-14
+S-00023
+  1. [.] shaders.js — sun flares: full 36-step march + heat haze retained; per-ejecta random width/height/footpoint (jetWidth cone, jetLenMax 0.30–0.88 shell, richer epoch seed)
+  2. [.] solar_system.js — sun flares zoom fill-rate: single-sided shell (Front/Back by camera) + half-res composite when shell is large on screen (layer 1 + additive upsample)
+  3. [.] VERSION_TRACKING.txt — clarify logging: one S-##### per full work session (not per edit); consolidate this session
+################################################################################
 ################################################################################
 2026-07-11
 S-00022

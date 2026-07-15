@@ -468,6 +468,255 @@ if (isShaderOn('shaderBloom')) {
     bloomPipeline = createBloomPipeline();
 }
 
+// ---------------------------------------------------------------------------
+// Sun flares half-res composite (zoom fill-rate fix)
+// Soft additive plasma looks correct at ½ linear resolution; ~4× fewer ray-marches
+// when the shell is large on screen. Far away: full-res (cheap — few pixels).
+// Layer 1 = sun flares only; main scene stays on layer 0.
+// ---------------------------------------------------------------------------
+const LAYER_SUN_FLARES = 1;
+let flareHalfResPipeline = null;
+
+function createFlareHalfResPipeline() {
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const pr = renderer.getPixelRatio();
+    const scale = 0.5;
+    const rtOpts = {
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        format: THREE.RGBAFormat,
+        depthBuffer: false,
+        stencilBuffer: false
+    };
+    const flareRT = new THREE.WebGLRenderTarget(
+        Math.max(1, Math.floor(w * pr * scale)),
+        Math.max(1, Math.floor(h * pr * scale)),
+        rtOpts
+    );
+    // Full-res buffer when we need to composite before bloom (scene already in bloom.sceneRT)
+    const compositeRT = new THREE.WebGLRenderTarget(
+        Math.max(1, Math.floor(w * pr)),
+        Math.max(1, Math.floor(h * pr)),
+        { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, format: THREE.RGBAFormat }
+    );
+
+    const quadGeo = new THREE.PlaneGeometry(2, 2);
+    const copyMat = new THREE.ShaderMaterial({
+        uniforms: { tDiffuse: { value: null } },
+        vertexShader: ss_shaders.bloomCompositeVertex,
+        fragmentShader: `
+            uniform sampler2D tDiffuse;
+            varying vec2 vUv;
+            void main() {
+                gl_FragColor = texture2D(tDiffuse, vUv);
+            }
+        `,
+        depthTest: false,
+        depthWrite: false,
+        transparent: false
+    });
+    const addMat = new THREE.ShaderMaterial({
+        uniforms: { tDiffuse: { value: null } },
+        vertexShader: ss_shaders.bloomCompositeVertex,
+        fragmentShader: `
+            uniform sampler2D tDiffuse;
+            varying vec2 vUv;
+            void main() {
+                gl_FragColor = texture2D(tDiffuse, vUv);
+            }
+        `,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true
+    });
+    const combineMat = new THREE.ShaderMaterial({
+        uniforms: {
+            tScene: { value: null },
+            tFlares: { value: null }
+        },
+        vertexShader: ss_shaders.bloomCompositeVertex,
+        fragmentShader: `
+            uniform sampler2D tScene;
+            uniform sampler2D tFlares;
+            varying vec2 vUv;
+            void main() {
+                vec4 scene = texture2D(tScene, vUv);
+                vec4 flares = texture2D(tFlares, vUv);
+                gl_FragColor = vec4(scene.rgb + flares.rgb, 1.0);
+            }
+        `,
+        depthTest: false,
+        depthWrite: false
+    });
+
+    const quadScene = new THREE.Scene();
+    const quad = new THREE.Mesh(quadGeo, copyMat);
+    quadScene.add(quad);
+    const orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    return {
+        flareRT,
+        compositeRT,
+        copyMat,
+        addMat,
+        combineMat,
+        quadScene,
+        quad,
+        orthoCam,
+        quadGeo,
+        scale,
+        resize(nw, nh, npr) {
+            const fw = Math.max(1, Math.floor(nw * npr * this.scale));
+            const fh = Math.max(1, Math.floor(nh * npr * this.scale));
+            this.flareRT.setSize(fw, fh);
+            this.compositeRT.setSize(Math.max(1, Math.floor(nw * npr)), Math.max(1, Math.floor(nh * npr)));
+        },
+        dispose() {
+            this.flareRT.dispose();
+            this.compositeRT.dispose();
+            this.copyMat.dispose();
+            this.addMat.dispose();
+            this.combineMat.dispose();
+            this.quadGeo.dispose();
+        },
+        /**
+         * Render main scene without flares, flares at half-res, additive composite.
+         * Integrates with optional bloom pipeline.
+         */
+        render(mainScene, mainCamera, bloom) {
+            // --- Scene without flares (layer 0 only) ---
+            mainCamera.layers.set(0);
+            if (bloom) {
+                renderer.setRenderTarget(bloom.sceneRT);
+                renderer.clear();
+                renderer.render(mainScene, mainCamera);
+            } else {
+                renderer.setRenderTarget(null);
+                renderer.clear();
+                renderer.render(mainScene, mainCamera);
+            }
+
+            // --- Flares only at half resolution ---
+            mainCamera.layers.set(LAYER_SUN_FLARES);
+            const prevClear = new THREE.Color();
+            renderer.getClearColor(prevClear);
+            const prevAlpha = renderer.getClearAlpha();
+            renderer.setClearColor(0x000000, 0);
+            renderer.setRenderTarget(this.flareRT);
+            renderer.clear();
+            renderer.render(mainScene, mainCamera);
+            renderer.setClearColor(prevClear, prevAlpha);
+
+            // Restore camera layers (default world + flares for next frame's non-half path)
+            mainCamera.layers.set(0);
+            mainCamera.layers.enable(LAYER_SUN_FLARES);
+
+            if (bloom) {
+                // sceneRT + half-res flares → compositeRT, then bloom from compositeRT
+                this.combineMat.uniforms.tScene.value = bloom.sceneRT.texture;
+                this.combineMat.uniforms.tFlares.value = this.flareRT.texture;
+                this.quad.material = this.combineMat;
+                renderer.setRenderTarget(this.compositeRT);
+                renderer.clear();
+                renderer.render(this.quadScene, this.orthoCam);
+
+                // Bloom extract/blur/combine using composite as the "scene"
+                bloom.brightMat.uniforms.tDiffuse.value = this.compositeRT.texture;
+                renderer.setRenderTarget(bloom.brightRT);
+                renderer.clear();
+                renderer.render(bloom.brightScene, bloom.orthoCam);
+
+                bloom.blurMat.uniforms.tDiffuse.value = bloom.brightRT.texture;
+                bloom.blurMat.uniforms.direction.value.set(1, 0);
+                renderer.setRenderTarget(bloom.blurRT);
+                renderer.clear();
+                renderer.render(bloom.blurScene, bloom.orthoCam);
+
+                bloom.blurMat.uniforms.tDiffuse.value = bloom.blurRT.texture;
+                bloom.blurMat.uniforms.direction.value.set(0, 1);
+                renderer.setRenderTarget(bloom.brightRT);
+                renderer.clear();
+                renderer.render(bloom.blurScene, bloom.orthoCam);
+
+                bloom.combineMat.uniforms.tDiffuse.value = this.compositeRT.texture;
+                bloom.combineMat.uniforms.tBloom.value = bloom.brightRT.texture;
+                renderer.setRenderTarget(null);
+                renderer.render(bloom.combineScene, bloom.orthoCam);
+            } else {
+                // Additive upscale of flares onto the already-drawn scene
+                this.quad.material = this.addMat;
+                this.addMat.uniforms.tDiffuse.value = this.flareRT.texture;
+                renderer.setRenderTarget(null);
+                const prevAutoClear = renderer.autoClear;
+                renderer.autoClear = false;
+                renderer.render(this.quadScene, this.orthoCam);
+                renderer.autoClear = prevAutoClear;
+            }
+        }
+    };
+}
+
+function getSunFlareMesh() {
+    if (typeof celestialObjects === 'undefined' || !celestialObjects) return null;
+    for (let i = 0; i < celestialObjects.length; i++) {
+        const obj = celestialObjects[i];
+        if (!obj || !obj.data || obj.data.type !== 'star' || !obj.mesh) continue;
+        const sunMesh = obj.mesh.getObjectByName(obj.data.name) || obj.mesh.children[0];
+        if (!sunMesh) continue;
+        const flares = sunMesh.getObjectByName('sunFlares');
+        if (flares) return flares;
+    }
+    return null;
+}
+
+/** True when the flare shell is large on screen — fill-rate dominates, use half-res. */
+function shouldRenderFlaresHalfRes(flareMesh) {
+    if (!flareMesh || !flareMesh.visible) return false;
+    if (typeof isShaderOn === 'function' && !isShaderOn('shaderSunFlares')) return false;
+    const localOuter = flareMesh.userData.flareOuterRadius;
+    if (!(localOuter > 0)) return false;
+
+    const worldPos = new THREE.Vector3();
+    flareMesh.getWorldPosition(worldPos);
+    const worldScale = new THREE.Vector3();
+    flareMesh.getWorldScale(worldScale);
+    const outerR = localOuter * worldScale.x;
+    const dist = Math.max(camera.position.distanceTo(worldPos), 1e-4);
+    const ang = Math.atan(outerR / dist);
+    const halfFov = (camera.fov * Math.PI / 180) * 0.5;
+    const screenFrac = ang / Math.max(halfFov, 1e-4);
+    // ~⅕ of vertical FOV and up → zoomed enough that fill-rate dominates
+    return screenFrac > 0.2;
+}
+
+function ensureFlareHalfResPipeline() {
+    if (!flareHalfResPipeline) {
+        flareHalfResPipeline = createFlareHalfResPipeline();
+    }
+    return flareHalfResPipeline;
+}
+
+function renderSolarSystemFrame() {
+    const flares = getSunFlareMesh();
+    const useHalf = shouldRenderFlaresHalfRes(flares);
+
+    if (useHalf) {
+        ensureFlareHalfResPipeline().render(scene, camera, bloomPipeline);
+        return;
+    }
+
+    // Full-res path: camera must see flare layer
+    camera.layers.set(0);
+    camera.layers.enable(LAYER_SUN_FLARES);
+    if (bloomPipeline) {
+        bloomPipeline.render(scene, camera);
+    } else {
+        renderer.render(scene, camera);
+    }
+}
+
 const isLogDepthBuffer = settings.useLogDepthBuffer === 'ON';
 
 
@@ -477,6 +726,8 @@ const nHardCodeOrbitScaleFactor = nHardCodeScaleFactor; //Must be a multiple of 
 // Scene setup
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, nHardCodeOrbitScaleFactor * 500);
+// Default world (0) + sun flares (1); half-res path temporarily isolates layers
+camera.layers.enable(LAYER_SUN_FLARES);
 const DEFAULT_CAM_X = 13 * nHardCodeOrbitScaleFactor / 1000;
 const DEFAULT_CAM_Y = -1450 * nHardCodeOrbitScaleFactor / 1000;
 const DEFAULT_CAM_Z = 360 * nHardCodeOrbitScaleFactor / 1000;
@@ -1972,6 +2223,11 @@ function getStarFresnelMesh(starBody) {
  * Volumetric solar flare / plasma-ejecta shell.
  * Ray-marched CMEs, prominence loops, and corona streamers (see sunFlareFragment).
  * Child of the surface mesh so active regions co-rotate with the photosphere.
+ *
+ * Single-sided shading (not DoubleSide): one ray-march per pixel.
+ * Outside shell → FrontSide (near faces pass depth vs photosphere).
+ * Inside shell  → BackSide  (interior of outer sphere fills the FOV).
+ * Side is refreshed each frame by updateSunFlareMeshSide().
  */
 function createSunFlareMesh(starBody) {
     const surfaceR = starBody.radius * nHardCodeScaleFactor;
@@ -1992,13 +2248,42 @@ function createSunFlareMesh(starBody) {
         depthWrite: false,
         depthTest: true,
         blending: THREE.AdditiveBlending,
-        side: THREE.DoubleSide
+        side: THREE.FrontSide
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = 'sunFlares';
     mesh.renderOrder = 2;
     mesh.frustumCulled = true;
+    // Dedicated layer so we can render flares alone at half-res when zoomed in
+    mesh.layers.set(LAYER_SUN_FLARES);
+    mesh.userData.flareOuterRadius = outerR;
+    mesh.userData.flareAtmosphereScale = atmosphereScale;
     return mesh;
+}
+
+/**
+ * Pick the single shell face that covers the volume without DoubleSide overdraw.
+ * Must run after the sun mesh has a valid world matrix for the frame.
+ */
+function updateSunFlareMeshSide(flareMesh) {
+    if (!flareMesh || !flareMesh.material) return;
+    const localOuter = flareMesh.userData.flareOuterRadius;
+    if (!(localOuter > 0)) return;
+
+    const sunWorldPos = new THREE.Vector3();
+    flareMesh.getWorldPosition(sunWorldPos);
+    const worldScale = new THREE.Vector3();
+    flareMesh.getWorldScale(worldScale);
+    const worldOuter = localOuter * worldScale.x;
+    const camDist = camera.position.distanceTo(sunWorldPos);
+
+    // Inside (or nearly inside) the outer shell: draw back faces so the sky is covered.
+    // Outside: draw front faces so fragments sit in front of the photosphere depth buffer.
+    const wantSide = (camDist < worldOuter * 0.98) ? THREE.BackSide : THREE.FrontSide;
+    if (flareMesh.material.side !== wantSide) {
+        flareMesh.material.side = wantSide;
+        flareMesh.material.needsUpdate = true;
+    }
 }
 
 
@@ -4626,6 +4911,13 @@ function animate() {
             
             sunMesh.quaternion.copy(obj.initialQuaternion);
             sunMesh.rotateY(rotationAngle);;  // Already tilted by axialTilt
+
+            // Single-face flare shell: FrontSide outside / BackSide when camera is inside
+            const flares = sunMesh.getObjectByName('sunFlares');
+            if (flares && flares.visible) {
+                updateSunFlareMeshSide(flares);
+            }
+
             nStarCount++;
 
             return;  
@@ -4939,11 +5231,7 @@ function animate() {
         orbitControls.update();
     }
     
-    if (bloomPipeline) {
-        bloomPipeline.render(scene, camera);
-    } else {
-        renderer.render(scene, camera);
-    }
+    renderSolarSystemFrame();
 }
 animate();
 
@@ -5593,8 +5881,12 @@ function applyLiveRenderSettings() {
         celestialObjects.forEach(syncCelestialObjectShadersLive);
     }
 
+    const pr = renderer.getPixelRatio();
     if (bloomPipeline) {
-        bloomPipeline.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
+        bloomPipeline.resize(window.innerWidth, window.innerHeight, pr);
+    }
+    if (flareHalfResPipeline) {
+        flareHalfResPipeline.resize(window.innerWidth, window.innerHeight, pr);
     }
 }
 
@@ -6389,6 +6681,9 @@ function onWindowResize() {
 
     if (bloomPipeline) {
         bloomPipeline.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
+    }
+    if (flareHalfResPipeline) {
+        flareHalfResPipeline.resize(window.innerWidth, window.innerHeight, renderer.getPixelRatio());
     }
 }
 

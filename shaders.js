@@ -1923,6 +1923,11 @@ const bloomCombineFragment = `
 // with domain-warped FBM plasma. Active regions re-seed on staggered epochs
 // so ejecta appear to erupt from different points on the photosphere.
 //
+// Heat haze is a thin near-surface envelope in accumulateSlot (hazeCone) —
+// needs full step density; do not skip accumulate or thin the march.
+// Zoom fill-rate is handled in JS via half-res composite when close-up.
+// Mesh is single-sided (JS flips Front/Back when camera enters shell).
+//
 // NOTE: Three.js r132 only injects modelMatrix into the *vertex* prefix.
 // The fragment shader must declare it explicitly or the program fails to compile.
 // ---------------------------------------------------------------------------
@@ -2062,10 +2067,12 @@ const sunFlareFragment = `
         return rise * max(peak, 0.0) * max(decay + 0.35 * (1.0 - age), 0.0);
     }
 
-    // Precompute one active-region slot (once per fragment, not per march step)
+    // Precompute one active-region slot (once per fragment, not per march step).
+    // Each epoch re-rolls foot location, jet width, and peak height (reasonable ranges).
     void initSlot(float si, float t,
                   out vec3 foot, out float env, out float age, out float seed,
-                  out float halfAng, out float jetLen, out float loopH, out float sprayGate) {
+                  out float halfAng, out float jetLen, out float loopH,
+                  out float sprayGate, out float jetWidth) {
         float period = 5.5 + hash11(si * 17.13) * 5.0;
         float phase  = hash11(si * 91.7 + 0.3) * period;
         // Stagger 4 slots evenly so activity stays continuous with fewer concurrent jets
@@ -2074,12 +2081,23 @@ const sunFlareFragment = `
         float epoch = floor(timeline);
         age = fract(timeline);
         env = flareEnvelope(age);
-        seed = epoch * 19.17 + si * 7.31 + 3.1;
+        // Richer seed so successive eruptions jump around the photosphere
+        seed = epoch * 19.17 + si * 7.31 + 3.1 + hash11(epoch + si * 13.7) * 2.0;
         foot = sphereDir(seed);
-        halfAng = mix(0.12, 0.22, hash11(seed + 1.1));
-        jetLen = mix(0.35, 0.95, smoothstep(0.05, 0.55, age));
-        loopH = mix(0.2, 0.5, hash11(seed + 2.3));
-        sprayGate = step(0.58, hash11(seed + 4.2));
+
+        // Peak height as fraction of shell — short pops to taller CMEs (not shell-filling)
+        float hPick = hash11(seed + 0.7);
+        float jetLenMax = mix(0.30, 0.88, pow(hPick, 1.15));
+        jetLen = jetLenMax * mix(0.35, 1.0, smoothstep(0.05, 0.55, age));
+
+        // Width class: 0-ish = thin needle, 1-ish = broader plume (still localized)
+        float wPick = hash11(seed + 1.1);
+        jetWidth = mix(0.15, 0.85, wPick);
+
+        // Prominence loop footprint / arch height (scaled a bit with jet size)
+        halfAng = mix(0.08, 0.28, hash11(seed + 2.1));
+        loopH = mix(0.15, 0.55, hash11(seed + 2.3)) * mix(0.7, 1.0, jetLenMax);
+        sprayGate = step(0.55, hash11(seed + 4.2));
         if (env < 0.012) {
             env = 0.0;
         }
@@ -2101,21 +2119,28 @@ const sunFlareFragment = `
         return tube / max(footFade, 0.15);
     }
 
-    // Full-quality single ejecta evaluation (precomputed slot params)
+    // Full-quality single ejecta evaluation (precomputed slot params).
+    // jetWidth (0..1): narrow needle → broader plume; drives cone thresholds.
     void accumulateSlot(
         vec3 n, float hNorm, float t,
         vec3 foot, float env, float age, float seed,
-        float halfAng, float jetLen, float loopH, float sprayGate,
+        float halfAng, float jetLen, float loopH, float sprayGate, float jetWidth,
         inout float dens, inout float heat
     ) {
         if (env < 0.012) return;
 
         float align = dot(n, foot);
-        // Early-out far from this jet (tight cones — most samples skip all heavy work)
-        if (align < 0.72) return;
+        // Early-out: narrow jets ~0.82, wider plumes ~0.62 (still localized)
+        float alignMin = mix(0.82, 0.62, jetWidth);
+        if (align < alignMin) return;
 
-        float cone = smoothstep(0.88, 0.985, align);
-        float hazeCone = smoothstep(0.78, 0.94, align);
+        float coneLo = mix(0.94, 0.84, jetWidth);
+        float coneHi = mix(0.995, 0.96, jetWidth);
+        float cone = smoothstep(coneLo, coneHi, align);
+
+        float hazeLo = mix(0.88, 0.74, jetWidth);
+        float hazeHi = mix(0.97, 0.90, jetWidth);
+        float hazeCone = smoothstep(hazeLo, hazeHi, align);
 
         float alongJet = hNorm / max(jetLen, 0.05);
         float inJetLen = 1.0 - smoothstep(0.82, 1.08, alongJet);
@@ -2129,17 +2154,20 @@ const sunFlareFragment = `
         }
 
         if (cone > 0.01) {
-            float coreAlign = pow(max(align, 0.0), mix(48.0, 22.0, age));
+            // Spine sharpness: needles stay tight; wide plumes soften (also age a bit)
+            float corePow = mix(mix(56.0, 28.0, jetWidth), mix(40.0, 18.0, jetWidth), age);
+            float coreAlign = pow(max(align, 0.0), corePow);
             float filaments = smoothstep(0.4, 0.88, turb);
             float spine = exp(-pow((1.0 - coreAlign) * 14.0, 2.0));
-            float sheath = exp(-pow((1.0 - coreAlign) * 5.5, 2.0)) * filaments;
+            float sheath = exp(-pow((1.0 - coreAlign) * mix(6.5, 4.2, jetWidth), 2.0)) * filaments;
 
             float jet = (spine * 1.15 + sheath * 0.75) * inJetLen * cone * env;
             jet *= mix(1.1, 0.55, age);
             dens += jet * 0.75;
             heat += jet * mix(1.15, 0.45, alongJet);
 
-            float spray = pow(max(align, 0.0), 14.0) *
+            float sprayPow = mix(18.0, 10.0, jetWidth);
+            float spray = pow(max(align, 0.0), sprayPow) *
                 smoothstep(0.05, 0.35, hNorm) *
                 (1.0 - smoothstep(0.45, 0.85, hNorm)) *
                 smoothstep(0.45, 0.8, turb) * env * sprayGate * 0.35;
@@ -2148,7 +2176,7 @@ const sunFlareFragment = `
         }
 
         if (hazeCone > 0.01 && env > 0.02) {
-            float angSoft = pow(max(align, 0.0), mix(10.0, 5.5, age));
+            float angSoft = pow(max(align, 0.0), mix(mix(12.0, 7.0, jetWidth), mix(8.0, 4.5, jetWidth), age));
             float shimmer = 0.55 + 0.45 * fbm(n * 4.5 + vec3(t * 0.55, seed * 0.1, hNorm * 2.0));
             float warp = 0.65 + 0.35 * sin(turb * 6.2831 + t * 1.8 + seed);
             float haze = angSoft * inHazeLen * hazeCone * env * shimmer * warp;
@@ -2158,7 +2186,8 @@ const sunFlareFragment = `
         }
 
         float loopEnv = env * smoothstep(0.08, 0.25, age) * (1.0 - smoothstep(0.7, 0.95, age));
-        if (loopEnv > 0.01 && align > 0.75) {
+        float loopAlignMin = mix(0.80, 0.70, jetWidth);
+        if (loopEnv > 0.01 && align > loopAlignMin) {
             float dLoop = prominenceLoop(n, hNorm, foot, halfAng, loopH);
             float loop = exp(-dLoop * dLoop * 32.0) * loopEnv;
             float loopTurb = smoothstep(0.35, 0.85, fbm(n * 12.0 + vec3(t * 0.2, seed, 0.0)));
@@ -2170,7 +2199,8 @@ const sunFlareFragment = `
             heat += loopHaze * 0.2;
         }
 
-        float footGlow = pow(max(align, 0.0), 80.0) * exp(-hNorm * 22.0) * env * 0.75;
+        float footPow = mix(95.0, 55.0, jetWidth);
+        float footGlow = pow(max(align, 0.0), footPow) * exp(-hNorm * 22.0) * env * 0.75;
         dens += footGlow;
         heat += footGlow * 0.9;
     }
@@ -2241,7 +2271,7 @@ const sunFlareFragment = `
         }
 
         // ---- Precompute ≤4 active regions once per pixel (not 36×) ----
-        // Same plasma / haze / loop math; only epoch/foot/envelope lifted out of the march.
+        // Epoch/foot/envelope + per-ejecta width/height lifted out of the march.
         vec3  f0, f1, f2, f3;
         float e0, e1, e2, e3;
         float a0, a1, a2, a3;
@@ -2250,10 +2280,11 @@ const sunFlareFragment = `
         float jl0, jl1, jl2, jl3;
         float lh0, lh1, lh2, lh3;
         float sg0, sg1, sg2, sg3;
-        initSlot(0.0, time, f0, e0, a0, s0, ha0, jl0, lh0, sg0);
-        initSlot(1.0, time, f1, e1, a1, s1, ha1, jl1, lh1, sg1);
-        initSlot(2.0, time, f2, e2, a2, s2, ha2, jl2, lh2, sg2);
-        initSlot(3.0, time, f3, e3, a3, s3, ha3, jl3, lh3, sg3);
+        float jw0, jw1, jw2, jw3;
+        initSlot(0.0, time, f0, e0, a0, s0, ha0, jl0, lh0, sg0, jw0);
+        initSlot(1.0, time, f1, e1, a1, s1, ha1, jl1, lh1, sg1, jw1);
+        initSlot(2.0, time, f2, e2, a2, s2, ha2, jl2, lh2, sg2, jw2);
+        initSlot(3.0, time, f3, e3, a3, s3, ha3, jl3, lh3, sg3, jw3);
 
         // Inverse of uniform scale * rotation — once per pixel
         vec3 col0 = modelMatrix[0].xyz;
@@ -2263,6 +2294,7 @@ const sunFlareFragment = `
         mat3 Rinv = transpose(mat3(col0 / sx, col1 / sx, col2 / sx));
         float invS = 1.0 / sx;
 
+        // Full 36-step march (heat haze is a thin near-surface layer — needs this density)
         const int MAX_STEPS = 36;
         float chord = tEnd - tStart;
         float stepLen = chord / float(MAX_STEPS);
@@ -2294,19 +2326,18 @@ const sunFlareFragment = `
             dens += chromo;
             heat += chromo * 0.4;
 
-            // Vectorized align test: skip dead slots without entering accumulate
-            // (4 dots assembled as vec4 — GPU-friendly)
+            // Align gate uses widest-plume threshold (~0.62); narrow jets early-out inside
             vec4 aligns = vec4(dot(n, f0), dot(n, f1), dot(n, f2), dot(n, f3));
             vec4 envs   = vec4(e0, e1, e2, e3);
-            // Unrolled slot bodies — full plasmaFBM quality when a cone hits
-            if (envs.x > 0.0 && aligns.x > 0.72)
-                accumulateSlot(n, hNorm, time, f0, e0, a0, s0, ha0, jl0, lh0, sg0, dens, heat);
-            if (envs.y > 0.0 && aligns.y > 0.72)
-                accumulateSlot(n, hNorm, time, f1, e1, a1, s1, ha1, jl1, lh1, sg1, dens, heat);
-            if (envs.z > 0.0 && aligns.z > 0.72)
-                accumulateSlot(n, hNorm, time, f2, e2, a2, s2, ha2, jl2, lh2, sg2, dens, heat);
-            if (envs.w > 0.0 && aligns.w > 0.72)
-                accumulateSlot(n, hNorm, time, f3, e3, a3, s3, ha3, jl3, lh3, sg3, dens, heat);
+            // Full plasma + heat-haze envelope when a cone hits
+            if (envs.x > 0.0 && aligns.x > 0.62)
+                accumulateSlot(n, hNorm, time, f0, e0, a0, s0, ha0, jl0, lh0, sg0, jw0, dens, heat);
+            if (envs.y > 0.0 && aligns.y > 0.62)
+                accumulateSlot(n, hNorm, time, f1, e1, a1, s1, ha1, jl1, lh1, sg1, jw1, dens, heat);
+            if (envs.z > 0.0 && aligns.z > 0.62)
+                accumulateSlot(n, hNorm, time, f2, e2, a2, s2, ha2, jl2, lh2, sg2, jw2, dens, heat);
+            if (envs.w > 0.0 && aligns.w > 0.62)
+                accumulateSlot(n, hNorm, time, f3, e3, a3, s3, ha3, jl3, lh3, sg3, jw3, dens, heat);
 
             dens = max(dens, 0.0);
             heat = clamp(heat, 0.0, 2.2);
