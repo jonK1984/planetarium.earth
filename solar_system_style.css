@@ -736,11 +736,28 @@ h4 { margin: 10px 0 5px 0; }
     top: 50%; 
     left: 50%; 
     transform: translate(-50%, -50%); 
-    max-width: 500px; 
+    width: max-content;
+    max-width: min(720px, 96vw);
     max-height: 80vh; 
     z-index: 20; 
     border: 1px solid white;
     overflow: hidden;
+    text-align: left;
+}
+
+/* Keep all Getting Started presets on one left-aligned row */
+#gettingStartedSettingsButtons {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    align-items: center;
+    gap: 8px;
+}
+
+#gettingStartedSettingsButtons .button {
+    margin-right: 0; /* gap handles spacing; avoid centered orphan wrap */
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 /* Slide Container */

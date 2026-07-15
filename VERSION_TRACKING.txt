@@ -87,6 +87,7 @@ S-00027
   4. [.] solar_system.js — smooth near-sun flare scale switch: pre-alloc half+quarter RTs (no hot-path setSize), GPU warm clear, earlier enter thresholds + sticky hysteresis (removes ~1s hitch)
   5. [js] TieFighterControls.js — double +/- throttle step (5→10; Shift fine 1→2)
   6. [.] solar_system.html / README.md — version bump to v0.9.5 (beta)
+  7. [.] solar_system.html / solar_system.js — Getting Started: “w/ Shaders (needs GPU)” preset (Recommended baseline + advanced shaders ON)
 ################################################################################
 ################################################################################
 2026-07-14

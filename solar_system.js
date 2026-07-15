@@ -87,6 +87,7 @@ function showGettingStartedPopup() {
         const safeModeButton = document.getElementById('safeModeButton');
         const currentSettingsButton = document.getElementById('currentSettingsButton');
         const recommendedSettingsButton = document.getElementById('recommendedSettingsButton');
+        const recommendedShadersSettingsButton = document.getElementById('recommendedShadersSettingsButton');
         //const closeButton = document.getElementById('closeGettingStarted');
         const dontShowAgainCheckbox = document.getElementById('dontShowAgain');
 
@@ -101,6 +102,17 @@ function showGettingStartedPopup() {
                 setCookie('hideGettingStarted', 'true', 365);
             }
             resolve();
+        }
+
+        /** Shared Recommended baseline cookies (texture/meshes/AA/etc.). */
+        function applyRecommendedBaselineCookies(areShadersEnabled) {
+            setCookie('textureSize', 'Medium', 30);
+            setCookie('anisotropicFiltering', 'ON', 30);
+            setCookie('antiAliasing', 'OFF', 30);
+            setCookie('areShadersEnabled', areShadersEnabled, 30);
+            setCookie('useLogDepthBuffer', 'ON', 30);
+            setCookie('useComplexMeshes', 'ON', 30);
+            setCookie('pixelRatio', '1.0', 30);
         }
 
         // Safe Mode: Lowest settings
@@ -127,7 +139,7 @@ function showGettingStartedPopup() {
             closePopup();
         });
 
-        // Recommended: High-quality settings
+        // Recommended: High-quality settings (shaders off — broadest hardware)
         recommendedSettingsButton.addEventListener('click', () => {
             textureSize = 'Medium';
             areShadersEnabled = 'OFF';
@@ -136,17 +148,40 @@ function showGettingStartedPopup() {
             anisotropicFiltering = 'ON';
             antiAliasing = 'OFF';
             pixelRatio = '1.0';
-            setCookie('textureSize', textureSize, 30);
-            setCookie('anisotropicFiltering', anisotropicFiltering, 30);
-            setCookie('antiAliasing', antiAliasing, 30);
-            setCookie('areShadersEnabled', areShadersEnabled, 30);
-            setCookie('useLogDepthBuffer', logarithmicDepthBuffer, 30);
-            setCookie('useComplexMeshes', complexMeshes, 30);
-            setCookie('pixelRatio', pixelRatio, 30);
+            applyRecommendedBaselineCookies('OFF');
             closePopup();
         });
 
-        
+        // Recommended + advanced shaders (needs GPU)
+        recommendedShadersSettingsButton.addEventListener('click', () => {
+            textureSize = 'Medium';
+            areShadersEnabled = 'ON';
+            logarithmicDepthBuffer = 'ON';
+            complexMeshes = 'ON';
+            anisotropicFiltering = 'ON';
+            antiAliasing = 'OFF';
+            pixelRatio = '1.0';
+            applyRecommendedBaselineCookies('ON');
+            // Local list — SHADER_OPTION_KEYS is declared later in this file
+            const shaderKeys = [
+                'shaderSunTurbulence',
+                'shaderSunCorona',
+                'shaderSunFlares',
+                'shaderSunGlare',
+                'shaderEarthNight',
+                'shaderSoftLighting',
+                'shaderRingLighting',
+                'shaderMoonShadows',
+                'shaderBloom',
+                'shaderCloudMotion',
+                'shaderAurora',
+                'shaderIoGlow'
+            ];
+            for (let i = 0; i < shaderKeys.length; i++) {
+                setCookie(shaderKeys[i], 'ON', 30);
+            }
+            closePopup();
+        });
     });
 }
 
