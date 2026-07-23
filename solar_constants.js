@@ -114,8 +114,15 @@ const bodies = [
           mass: 3.69e-8, // Solar masses
           radius: 0.000011, // AU
           color: 0xcccccc, // Light gray
-          texture: 'moon_texture.jpg',
-          normalMap: 'normal_map_moon.jpg',
+          // Celestia VT under textures_*/Moon and textures_*/MoonNormal
+          texture: {
+            type: 'celestia-vt',
+            ctx: 'Moon.ctx'
+          },
+          normalMap: {
+            type: 'celestia-vt',
+            ctx: 'MoonNormal.ctx'
+          },
           rotationalAngularMomentum: 2.36e29,  // kg m²/s
           axialTilt: 6.68,  // relative to ecliptic
           siderealDay: 2360520, // 27.32166 days in seconds, tidally locked
@@ -635,6 +642,7 @@ const bodies = [
           mass: 6.13e-10, // Solar masses
           radius: 0.00000391, // AU
           color: 0x808080, // Gray
+          texture: 'umbriel_texture.png',
           rotationalAngularMomentum: 4.41e27,  // kg m²/s (tidally locked)
           axialTilt: 0,
           siderealDay: 357696, // 4.144 days in seconds, tidally locked
@@ -736,7 +744,11 @@ const bodies = [
           mass: 1.08e-8, // Solar masses (~2.14e22 kg; was 1.08e-7, 10× too high vs density/g)
           radius: 0.00000905, // AU
           color: 0x808080, // Gray
-          texture: 'triton_texture.png',
+          // Celestia VT under textures_*/Triton/ (stitched at runtime, capped 8K×4K)
+          texture: {
+            type: 'celestia-vt',
+            ctx: 'Triton.ctx'
+          },
           moonScale: 1,
           moonOrbitScale: 1,
           rotationalAngularMomentum: 2.02e28,  // kg m²/s (retrograde, tidally locked)
@@ -781,6 +793,7 @@ const bodies = [
           mass: 2.51e-11, // Solar masses
           radius: 0.00000147, // AU
           color: 0x808080, // Gray
+          texture: 'proteus_texture.png',
           rotationalAngularMomentum: 2.18e26,  // kg m²/s (tidally locked)
           axialTilt: 0,
           siderealDay: 96768, // 1.12 days in seconds, tidally locked
@@ -802,6 +815,7 @@ const bodies = [
           mass: 2.51e-12, // Solar masses
           radius: 0.00000072, // AU
           color: 0x808080, // Gray
+          texture: 'larissa_texture.png',
           rotationalAngularMomentum: 5.17e25,  // kg m²/s (tidally locked)
           axialTilt: 0,
           siderealDay: 47693, // 0.554 days in seconds, tidally locked

@@ -1,0 +1,7 @@
+VirtualTexture
+{
+        ImageDirectory "MoonNormal"
+        BaseSplit 0
+        TileSize 256
+        TileType "png"
+}

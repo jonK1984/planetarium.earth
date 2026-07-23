@@ -85,6 +85,34 @@ Any static file server works (VS Code Live Server, `npx serve`, nginx, etc.).
 
 ---
 
+## Texture packs & Celestia Virtual Textures
+
+Surface maps live under `textures_lo/`, `textures_md/`, `textures_hi/`, and `textures_mx/` (selected by **Render Settings → Texture Size**).
+
+- **Normal maps:** a single file, e.g. `proteus_texture.png`, in each tier folder.
+- **Celestia Virtual Textures (VT):** a `.ctx` plus a tile subfolder next to it, e.g.:
+
+```
+textures_mx/Triton.ctx
+textures_mx/Triton/level0/tx_0_0.png …
+textures_mx/Moon.ctx + Moon/level*…
+textures_mx/MoonNormal.ctx + MoonNormal/level*…   # normal-map VT (linear, not sRGB)
+```
+
+Lower tiers may only ship the levels they need (`textures_lo` / `md` → `level0` only; `hi` / `mx` → deeper levels). The runtime loader (`js/CelestiaVTLoader.js`) stitches tiles into one equirectangular texture (capped at **8192×4096**), using each tile’s real pixel size (ctx `TileSize` can be wrong).
+
+In `solar_constants.js`:
+
+```js
+texture: 'proteus_texture.png',                       // flat file under TEXTURE_PATH
+texture: { type: 'celestia-vt', ctx: 'Moon.ctx' },    // albedo VT
+normalMap: { type: 'celestia-vt', ctx: 'MoonNormal.ctx' },
+```
+
+External pack folders are **not** required at runtime once assets are copied into these trees.
+
+---
+
 ## Repository layout
 
 ```
@@ -143,7 +171,7 @@ Full tables live under the in-app **Help** menu (Simulation / Orbital / Flight c
 Code and documentation changes are recorded in plain language in:
 
 - **VERSION_TRACKING.txt** — session IDs (`S-#####`) and numbered change lines  
-  - Recent: **S-00026** volcanic/cryovolcanic plumes + hotspots; **S-00016** Earth aurora ribbons + `0` key atmosphere toggle; **S-00007** night-side city glow
+  - Recent: **S-00028** Celestia VT texture loader (Moon/Triton); **S-00026** volcanic/cryovolcanic plumes + hotspots; **S-00016** Earth aurora ribbons + `0` key atmosphere toggle
 - **FILE_MANIFEST.txt** — which files exist and what they do
 
 Git history shows diffs; these files record intent for future maintainers.

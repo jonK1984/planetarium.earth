@@ -79,6 +79,17 @@ SUGGESTED PRACTICES
 CHANGE LOG
 ----------
 ################################################################################
+2026-07-23
+S-00028
+  1. [js] CelestiaVTLoader.js — new Celestia Virtual Texture (.ctx) loader: parse descriptor, discover levelN/tx_X_Y tiles, stitch equirectangular map (real tile pixel size; ctx TileSize often wrong), quality-tier caps, gray fill for missing tiles, load / loadIntoTexture API
+  2. [.] solar_system.js — texture loader rewrite: resolveTextureSpec (string | type:file | type:celestia-vt) + loadTextureSpec; VT placeholder textures fill async with tile progress in loading log; normal maps stay linear (no sRGB); surface/normal/specular/cloud/ring/bump/night all go through unified path
+  3. [.] solar_system.html — include js/CelestiaVTLoader.js before GLTFLoader
+  4. [.] solar_constants.js — Moon albedo+normal and Triton albedo as { type:'celestia-vt', ctx:'…' }; add flat textures for Umbriel, Proteus, Larissa
+  5. [textures_lo|md|hi|mx] Moon.ctx / MoonNormal.ctx / Triton.ctx + level tiles (tier depth varies); umbriel/proteus/larissa_texture.png
+  6. [.] README.md — document texture packs & Celestia VT layout, caps (8192×4096), and constants spec shape
+  7. [.] FILE_MANIFEST.txt / VERSION_TRACKING.txt — inventory + this session log
+################################################################################
+################################################################################
 2026-07-14
 S-00027
   1. [.] solar_system.js — near-sun flight stability: restore adaptive half/quarter-res flare composite when the outer shell is large on screen or camera is inside (chooseFlareResScale); keep full-res depth path for limb peeks; full sunFlare shader quality unchanged

@@ -1,0 +1,7 @@
+VirtualTexture
+{
+        ImageDirectory "Triton"
+        BaseSplit 0
+        TileSize 2048 # 2048
+        TileType "png"
+} 

@@ -2275,11 +2275,66 @@ function updateProgress(message) {
     }, 0);
 }
 
-// Modified getTexturesForPlanet with responsive updates
+/**
+ * Resolve a texture field from solar_constants to a concrete load plan.
+ * Supports:
+ *   - string — file under current TEXTURE_PATH (e.g. 'proteus_texture.png')
+ *   - { type: 'file', path: '…' } — absolute-from-site-root path (optional escape hatch)
+ *   - { type: 'celestia-vt', ctx: 'Triton.ctx' } — Celestia VT under TEXTURE_PATH
+ *       (tiles live in TEXTURE_PATH + ImageDirectory from the .ctx, e.g. textures_mx/Triton/levelN/)
+ *
+ * @returns {{ kind: 'url', url: string, isDDS: boolean } | { kind: 'celestia-vt', ctx: string } | null }
+ */
+function resolveTextureSpec(spec) {
+    if (!spec) return null;
+    if (typeof spec === 'string') {
+        return {
+            kind: 'url',
+            url: TEXTURE_PATH + spec,
+            isDDS: spec.toLowerCase().endsWith('.dds')
+        };
+    }
+    if (typeof spec === 'object') {
+        if (spec.type === 'celestia-vt' && spec.ctx) {
+            // Prefer paths relative to the active quality tier folder (textures_lo|md|hi|mx/)
+            let ctxPath = spec.ctx;
+            const isAbsoluteish = /^(https?:\/\/|\/|\.\/)/i.test(ctxPath)
+                || ctxPath.includes('://');
+            if (!isAbsoluteish) {
+                ctxPath = TEXTURE_PATH + ctxPath;
+            }
+            return { kind: 'celestia-vt', ctx: ctxPath };
+        }
+        if (spec.type === 'file' && spec.path) {
+            const path = spec.path;
+            const enc = (typeof CelestiaVTLoader !== 'undefined' && CelestiaVTLoader.encodePathUrl)
+                ? CelestiaVTLoader.encodePathUrl(path)
+                : path;
+            return {
+                kind: 'url',
+                url: enc,
+                isDDS: path.toLowerCase().endsWith('.dds')
+            };
+        }
+    }
+    console.warn('resolveTextureSpec: unrecognized texture spec', spec);
+    return null;
+}
+
+/** Append a line to the loading log without advancing the progress counter (tile-level VT updates). */
+function logLoadingMessage(message) {
+    setTimeout(() => {
+        const logDiv = document.getElementById('loadingLog');
+        if (!logDiv) return;
+        logDiv.innerHTML += `${message}<br>`;
+        logDiv.scrollTop = logDiv.scrollHeight;
+    }, 0);
+}
+
+// Modified getTexturesForPlanet with responsive updates + Celestia VT / pack file support
 function getTexturesForPlanet(oPlanet) {
     const imageTextureLoader = new THREE.TextureLoader();
     const textureLoaderDDS = new THREE.DDSLoader();
-    let textureLoader = imageTextureLoader;
     let surfaceTexture = null;
     let normalMap = null;
     let specularMap = null;
@@ -2301,7 +2356,7 @@ function getTexturesForPlanet(oPlanet) {
         return { surfaceTexture, normalMap, specularMap, cloudTexture, ringTexture, bumpTexture, nightMap };
     }
 
-    function applyAnisotropic(texture, name, isDDS=false) {
+    function applyAnisotropic(texture, name, isDDS=false, linearEncoding=false) {
         const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
         if (texture && settings.anisotropicFiltering === 'ON' && maxAnisotropy) {
             if( isDDS )
@@ -2315,7 +2370,10 @@ function getTexturesForPlanet(oPlanet) {
                 texture.minFilter = THREE.LinearMipMapLinearFilter;
                 texture.magFilter = THREE.LinearFilter;
                 texture.generateMipmaps = true; // Ensure Three.js generates mipmaps
-                texture.encoding = THREE.sRGBEncoding;
+                // Normal maps must stay linear; color maps use sRGB
+                if (!linearEncoding && THREE.sRGBEncoding !== undefined) {
+                    texture.encoding = THREE.sRGBEncoding;
+                }
                 console.log(`${name} anisotropy set to ${texture.anisotropy}`);
             }
         } else {
@@ -2327,161 +2385,99 @@ function getTexturesForPlanet(oPlanet) {
         return texture;
     }
 
-    if (oPlanet.texture) {
-        const isDDS = oPlanet.texture.toLowerCase().endsWith('.dds');
-        if (oPlanet.texture && isDDS) {
-            // Do something here
-            textureLoader = textureLoaderDDS;
-        }
-        else
-        {
-            textureLoader = imageTextureLoader;
+    /**
+     * Load a resolved texture spec into a THREE.Texture (fire-and-forget, like TextureLoader.load).
+     * Celestia VT stitches asynchronously then fills the same Texture object (materials already hold the ref).
+     * @param {boolean} [linearEncoding] - true for normal maps (no sRGB)
+     */
+    function loadTextureSpec(spec, label, linearEncoding) {
+        const resolved = resolveTextureSpec(spec);
+        if (!resolved) return null;
+        const isLinear = !!linearEncoding;
+
+        if (resolved.kind === 'celestia-vt') {
+            if (typeof CelestiaVTLoader === 'undefined') {
+                console.error(`${label}: CelestiaVTLoader.js not loaded`);
+                updateProgress(`${label} VT loader missing`);
+                return null;
+            }
+            const placeholder = new THREE.Texture();
+            if (!placeholder.userData) placeholder.userData = {};
+            placeholder.wrapS = THREE.RepeatWrapping;
+            placeholder.wrapT = THREE.RepeatWrapping;
+            if (!isLinear && THREE.sRGBEncoding !== undefined) {
+                placeholder.encoding = THREE.sRGBEncoding;
+            }
+
+            const maxTex = (renderer && renderer.capabilities && renderer.capabilities.maxTextureSize)
+                ? renderer.capabilities.maxTextureSize
+                : 8192;
+            const capW = Math.min(8192, maxTex);
+            const capH = Math.min(4096, maxTex);
+
+            logLoadingMessage(`${label}: stitching Celestia VT…`);
+            CelestiaVTLoader.loadIntoTexture(resolved.ctx, placeholder, {
+                quality: settings.textureSize,
+                maxWidth: capW,
+                maxHeight: capH,
+                maxTextureSize: maxTex,
+                linearEncoding: isLinear,
+                onTileProgress: (loaded, total) => {
+                    if (loaded === total || loaded % 8 === 0) {
+                        logLoadingMessage(`${label}: VT tiles ${loaded}/${total}`);
+                    }
+                },
+                onComplete: (tex) => {
+                    applyAnisotropic(tex, `${label} VT`, false, isLinear);
+                    const sz = tex.userData && tex.userData.celestiaVT && tex.userData.celestiaVT.outputSize;
+                    const sizeNote = sz ? ` (${sz.w}×${sz.h})` : '';
+                    updateProgress(`${label} VT loaded${sizeNote}`);
+                },
+                onError: (error) => {
+                    console.error(`${label} VT load error:`, error);
+                    updateProgress(`${label} VT load error`);
+                }
+            }).catch(() => { /* onError already advanced progress */ });
+
+            return placeholder;
         }
 
-        surfaceTexture = textureLoader.load(
-            TEXTURE_PATH + oPlanet.texture,
+        // Flat URL (legacy under TEXTURE_PATH, or type:'file' pack path)
+        const loader = resolved.isDDS ? textureLoaderDDS : imageTextureLoader;
+        return loader.load(
+            resolved.url,
             (tex) => {
-                applyAnisotropic(tex, `${oPlanet.name} surface`, isDDS);
-                updateProgress(`${oPlanet.name} texture map loaded`);
+                applyAnisotropic(tex, label, resolved.isDDS, isLinear);
+                updateProgress(`${label} loaded`);
             },
             undefined,
             (error) => {
-                console.error(`${oPlanet.name} texture map load error:`, error);
-                updateProgress(`${oPlanet.name} texture map load error`);
+                console.error(`${label} load error:`, error);
+                updateProgress(`${label} load error`);
             }
         );
+    }
+
+    if (oPlanet.texture) {
+        surfaceTexture = loadTextureSpec(oPlanet.texture, `${oPlanet.name} surface`, false);
     }
     if (oPlanet.normalMap) {
-        const isDDS = oPlanet.normalMap.toLowerCase().endsWith('.dds');
-        if (oPlanet.normalMap && isDDS) {
-            // Do something here
-            textureLoader = textureLoaderDDS;
-        }
-        else
-        {
-            textureLoader = imageTextureLoader;
-        }
-        normalMap = textureLoader.load(
-            TEXTURE_PATH + oPlanet.normalMap,
-            (tex) => {
-                applyAnisotropic(tex, `${oPlanet.name} normal`, isDDS);
-                updateProgress(`${oPlanet.name} normal map loaded`);
-            },
-            undefined,
-            (error) => {
-                console.error(`${oPlanet.name} normal map load error:`, error);
-                updateProgress(`${oPlanet.name} normal map load error`);
-            }
-        );
+        normalMap = loadTextureSpec(oPlanet.normalMap, `${oPlanet.name} normal map`, true);
     }
     if (oPlanet.specularMap) {
-        const isDDS = oPlanet.specularMap.toLowerCase().endsWith('.dds');
-        if (oPlanet.specularMap && isDDS) {
-            // Do something here
-            textureLoader = textureLoaderDDS;
-        }
-        else
-        {
-            textureLoader = imageTextureLoader;
-        }
-
-        specularMap = textureLoader.load(
-            TEXTURE_PATH + oPlanet.specularMap,
-            (tex) => {
-                applyAnisotropic(tex, `${oPlanet.name} specular`, isDDS);
-                updateProgress(`${oPlanet.name} specular map loaded`);
-            },
-            undefined,
-            (error) => {
-                console.error(`${oPlanet.name} specular map load error:`, error);
-                updateProgress(`${oPlanet.name} specular map load error`);
-            }
-        );
+        specularMap = loadTextureSpec(oPlanet.specularMap, `${oPlanet.name} specular map`);
     }
     if (oPlanet.atmosphere_texture) {
-        const isDDS = oPlanet.atmosphere_texture.toLowerCase().endsWith('.dds');
-        if (oPlanet.atmosphere_texture && isDDS) {
-            // Do something here
-            textureLoader = textureLoaderDDS;
-        }
-        else
-        {
-            textureLoader = imageTextureLoader;
-        }
-        cloudTexture = textureLoader.load(
-            TEXTURE_PATH + oPlanet.atmosphere_texture,
-            (tex) => {
-                applyAnisotropic(tex, `${oPlanet.name} atmosphere`, isDDS);
-                updateProgress(`${oPlanet.name} cloud texture loaded`);
-            },
-            undefined,
-            (error) => {
-                console.error(`${oPlanet.name} cloud texture load error:`, error);
-                updateProgress(`${oPlanet.name} cloud texture load error`);
-            }
-        );
+        cloudTexture = loadTextureSpec(oPlanet.atmosphere_texture, `${oPlanet.name} cloud texture`);
     }
     if (oPlanet.ring_texture) {
-        const isDDS = oPlanet.ring_texture.toLowerCase().endsWith('.dds');
-        if (oPlanet.ring_texture && isDDS) {
-            // Do something here
-            textureLoader = textureLoaderDDS;
-        }
-        else
-        {
-            textureLoader = imageTextureLoader;
-        }
-        ringTexture = textureLoader.load(
-            TEXTURE_PATH + oPlanet.ring_texture,
-            (tex) => {
-                applyAnisotropic(tex, `${oPlanet.name} ring`,isDDS);
-                updateProgress(`${oPlanet.name} ring texture loaded`);
-            },
-            undefined,
-            (error) => {
-                console.error(`${oPlanet.name} ring texture load error:`, error);
-                updateProgress(`${oPlanet.name} ring texture load error`);
-            }
-        );
+        ringTexture = loadTextureSpec(oPlanet.ring_texture, `${oPlanet.name} ring`);
     }
     if (oPlanet.bump_texture) {
-        const isDDS = oPlanet.bump_texture.toLowerCase().endsWith('.dds');
-        if (oPlanet.bump_texture && isDDS) {
-            // Do something here
-            textureLoader = textureLoaderDDS;
-        }
-        else
-        {
-            textureLoader = imageTextureLoader;
-        }
-        bumpTexture = textureLoader.load(
-            TEXTURE_PATH + oPlanet.bump_texture,
-            (tex) => {
-                applyAnisotropic(tex, `${oPlanet.name} bump`,isDDS);
-                updateProgress(`${oPlanet.name} bump texture loaded`);
-            },
-            undefined,
-            (error) => {
-                console.error(`${oPlanet.name} bump texture load error:`, error);
-                updateProgress(`${oPlanet.name} bump texture load error`);
-            }
-        );
+        bumpTexture = loadTextureSpec(oPlanet.bump_texture, `${oPlanet.name} bump`);
     }
     if (oPlanet.nightMap) {
-        const isDDS = oPlanet.nightMap.toLowerCase().endsWith('.dds');
-        textureLoader = isDDS ? textureLoaderDDS : imageTextureLoader;
-        nightMap = textureLoader.load(
-            TEXTURE_PATH + oPlanet.nightMap,
-            (tex) => {
-                applyAnisotropic(tex, `${oPlanet.name} night`, isDDS);
-                updateProgress(`${oPlanet.name} night map loaded`);
-            },
-            undefined,
-            (error) => {
-                console.error(`${oPlanet.name} night map load error:`, error);
-                updateProgress(`${oPlanet.name} night map load error`);
-            }
-        );
+        nightMap = loadTextureSpec(oPlanet.nightMap, `${oPlanet.name} night map`);
     }
 
     return { surfaceTexture, normalMap, specularMap, cloudTexture, ringTexture, bumpTexture, nightMap };

@@ -12,7 +12,7 @@ Update this file when files are added or removed, CDN / external URLs change,
 special entry points change, or a file’s role changes significantly.
 Record the corresponding work in VERSION_TRACKING.txt (session block).
 
-Last aligned with: S-00004 (2026-07-11)
+Last aligned with: S-00028 (2026-07-23)
 
 
 ================================================================================
@@ -113,6 +113,12 @@ js/MTLLoader.js
 js/DDSLoader.js
   Loader for DDS compressed textures (asteroid texture packs).
 
+js/CelestiaVTLoader.js
+  Celestia Virtual Texture (.ctx) loader: parses VirtualTexture descriptors,
+  loads levelN/tx_X_Y tiles, stitches into one equirectangular THREE.Texture
+  (capped 8192×4096). Used by solar_system.js getTexturesForPlanet for bodies
+  with texture / normalMap specs of type 'celestia-vt' (e.g. Moon, Triton).
+
 js/GLTFLoader.js
   Loader for glTF / GLB models (primary asteroid mesh format).
 
@@ -187,6 +193,9 @@ Typical contents per tier:
   - Normal / specular / bump maps (normal_map_*, specular_map_earth, etc.)
   - Earth night lights (earth_night_lights.png) — NASA Black Marble 2016 VIIRS composite for advanced Earth night-side shader
   - Sun textures, star / milky-way backdrops
+  - Celestia Virtual Textures: Name.ctx + Name/levelN/tx_X_Y.png (e.g. Moon,
+    MoonNormal, Triton). Lower tiers may ship only level0; hi/mx include deeper
+    levels. Runtime stitch via js/CelestiaVTLoader.js.
   - textures_*/asteroid/ — DDS (and some PNG) asteroid surface packs
 
 Approximate file counts (excluding OS junk): lo ~88, md ~89, hi ~86, mx ~87.
